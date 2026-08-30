@@ -232,6 +232,13 @@ void FloatingBall::onPaint()
     const COLORREF status = theme::usageColor(ms.percent);
     wchar_t pct[16] = {};
     swprintf(pct, 16, L"%u%%", ms.percent);
+    const uint64_t usedBytes = ms.totalBytes > ms.availBytes
+                                   ? ms.totalBytes - ms.availBytes
+                                   : 0;
+    wchar_t usedText[32] = {};
+    swprintf(usedText, 32, L"%.1f/%.0fG",
+             static_cast<double>(usedBytes) / (1ull << 30),
+             static_cast<double>(ms.totalBytes) / (1ull << 30));
 
     SetBkMode(mem, TRANSPARENT);
 
@@ -248,12 +255,21 @@ void FloatingBall::onPaint()
         DeleteObject(ring);
 
         static HFONT pctFont = DrawUtils::font(15, true);
+        static HFONT subFont = DrawUtils::font(10, false);
         SelectObject(mem, pctFont);
         SetTextColor(mem, status);
         SIZE sz{};
         GetTextExtentPoint32W(mem, pct, static_cast<int>(wcslen(pct)), &sz);
-        TextOutW(mem, (rc.right - sz.cx) / 2, (rc.bottom - sz.cy) / 2, pct,
+        TextOutW(mem, (rc.right - sz.cx) / 2, 11, pct,
                  static_cast<int>(wcslen(pct)));
+
+        // 第二行：已用/总内存（GB）
+        SelectObject(mem, subFont);
+        SetTextColor(mem, theme::TEXT_DIM);
+        GetTextExtentPoint32W(mem, usedText, static_cast<int>(wcslen(usedText)),
+                              &sz);
+        TextOutW(mem, (rc.right - sz.cx) / 2, 35, usedText,
+                 static_cast<int>(wcslen(usedText)));
 
         // 自动清理状态小点
         const COLORREF dot =
@@ -286,17 +302,21 @@ void FloatingBall::onPaint()
             DeleteObject(db);
             DeleteObject(dp);
 
+            // 竖排：百分比 + 已用内存
+            wchar_t vertical[48] = {};
+            swprintf(vertical, 48, L"%s %.1fG", pct,
+                     static_cast<double>(usedBytes) / (1ull << 30));
             SelectObject(mem, verticalFont());
             SetTextColor(mem, status);
             const int cy = (rc.bottom + defaults::kDockThickness) / 2 + 6;
             SIZE sz{};
-            GetTextExtentPoint32W(mem, pct, static_cast<int>(wcslen(pct)), &sz);
-            // 竖排：文字绕基点旋转，向下书写
+            GetTextExtentPoint32W(mem, vertical, static_cast<int>(wcslen(vertical)),
+                                  &sz);
             TEXTMETRICW tm{};
             GetTextMetricsW(mem, &tm);
             SetTextAlign(mem, TA_BASELINE | TA_CENTER);
-            TextOutW(mem, cx + tm.tmHeight / 2 - 1, cy - sz.cx / 2, pct,
-                     static_cast<int>(wcslen(pct)));
+            TextOutW(mem, cx + tm.tmHeight / 2 - 1, cy - sz.cx / 2, vertical,
+                     static_cast<int>(wcslen(vertical)));
             SetTextAlign(mem, TA_LEFT | TA_TOP);
         } else {
             const int cy = rc.bottom / 2;
@@ -313,9 +333,12 @@ void FloatingBall::onPaint()
             static HFONT small = DrawUtils::font(11, true);
             SelectObject(mem, small);
             SetTextColor(mem, status);
+            wchar_t horizontal[48] = {};
+            swprintf(horizontal, 48, L"%s %.1fG", pct,
+                     static_cast<double>(usedBytes) / (1ull << 30));
             SetTextAlign(mem, TA_BASELINE | TA_LEFT);
-            TextOutW(mem, defaults::kDockThickness + 6, cy + 5, pct,
-                     static_cast<int>(wcslen(pct)));
+            TextOutW(mem, defaults::kDockThickness + 6, cy + 5, horizontal,
+                     static_cast<int>(wcslen(horizontal)));
             SetTextAlign(mem, TA_LEFT | TA_TOP);
         }
     }

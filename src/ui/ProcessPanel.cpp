@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -23,32 +24,75 @@ constexpr int IDC_BTN_HIDE = 102;
 constexpr int kHeaderH = 44;
 constexpr int kFooterH = 56;
 constexpr int kMargin = 10;
+constexpr int kGroupRowH = 38;
+constexpr int kChildRowH = 26;
 
-std::wstring levelTag(const ProcessInfo& p)
+const ProcessInfo* findProc(const std::unordered_map<uint32_t, size_t>& pidIndex,
+                            uint32_t pid)
 {
-    switch (p.level) {
-    case ProtectionLevel::System:
-        return L"系统";
-    case ProtectionLevel::UserProtected:
-        return L"已保护";
-    case ProtectionLevel::AutoClean:
-        return L"自动清理";
-    default:
-        return L"";
-    }
+    auto it = pidIndex.find(pid);
+    if (it == pidIndex.end())
+        return nullptr;
+    const auto& procs = g_app.scanner.processes();
+    return it->second < procs.size() ? &procs[it->second] : nullptr;
 }
 
-COLORREF levelTagColor(ProtectionLevel level)
+// 行的可结束性：组行 = 组内存在可结束成员
+bool rowCanTerminate(const PanelRow& row,
+                     const std::unordered_map<uint32_t, size_t>& pidIndex)
 {
-    switch (level) {
-    case ProtectionLevel::System:
-    case ProtectionLevel::UserProtected:
-        return theme::PROTECTED;
-    case ProtectionLevel::AutoClean:
-        return theme::WARN;
-    default:
-        return theme::TEXT_DIM;
+    for (uint32_t pid : row.pids) {
+        const ProcessInfo* p = findProc(pidIndex, pid);
+        if (p && p->canTerminate)
+            return true;
     }
+    return false;
+}
+
+uint64_t rowMemory(const PanelRow& row,
+                   const std::unordered_map<uint32_t, size_t>& pidIndex)
+{
+    uint64_t total = 0;
+    for (uint32_t pid : row.pids) {
+        const ProcessInfo* p = findProc(pidIndex, pid);
+        if (p)
+            total += p->workingSet;
+    }
+    return total;
+}
+
+double rowCpu(const PanelRow& row,
+              const std::unordered_map<uint32_t, size_t>& pidIndex)
+{
+    double total = 0;
+    for (uint32_t pid : row.pids) {
+        const ProcessInfo* p = findProc(pidIndex, pid);
+        if (p)
+            total += p->cpuPercent;
+    }
+    return total;
+}
+
+// 行的标记：全保护=系统/已保护；组内含自动清理名单=自动清理
+std::wstring rowTag(const PanelRow& row,
+                    const std::unordered_map<uint32_t, size_t>& pidIndex)
+{
+    bool allProtected = true;
+    bool hasAuto = false;
+    for (uint32_t pid : row.pids) {
+        const ProcessInfo* p = findProc(pidIndex, pid);
+        if (!p)
+            continue;
+        if (p->canTerminate)
+            allProtected = false;
+        if (p->level == ProtectionLevel::AutoClean)
+            hasAuto = true;
+    }
+    if (hasAuto)
+        return L"自动清理";
+    if (allProtected)
+        return L"系统";
+    return L"";
 }
 
 } // namespace
@@ -83,22 +127,20 @@ bool ProcessPanel::create(HINSTANCE hInstance)
                                   defaults::kPanelRadius * 2);
     SetWindowRgn(hwnd_, rgn, FALSE);
 
-    // 发送 WM_CREATE 时机已过，手动初始化子控件
-    // （这里直接在 create 里建，避免依赖 WM_CREATE 时序）
-    listBox_ = CreateWindowExW(0, L"LISTBOX", nullptr,
-                               WS_CHILD | WS_VISIBLE | WS_VSCROLL |
-                                   LBS_OWNERDRAWFIXED | LBS_MULTIPLESEL |
-                                   LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
-                               kMargin, kHeaderH, defaults::kPanelWidth - kMargin * 2,
-                               defaults::kPanelHeight - kHeaderH - kFooterH, hwnd_,
-                               reinterpret_cast<HMENU>(IDC_LIST), hInstance, nullptr);
+    // WM_CREATE 时机已过，直接创建子控件
+    listBox_ = CreateWindowExW(
+        0, L"LISTBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_OWNERDRAWVARIABLE |
+            LBS_MULTIPLESEL | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
+        kMargin, kHeaderH, defaults::kPanelWidth - kMargin * 2,
+        defaults::kPanelHeight - kHeaderH - kFooterH, hwnd_,
+        reinterpret_cast<HMENU>(IDC_LIST), hInstance, nullptr);
     if (!listBox_)
         return false;
-    SendMessageW(listBox_, LB_SETITEMHEIGHT, 0, 44);
 
     CreateWindowExW(0, L"BUTTON", L"结束所选进程",
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                    kMargin, defaults::kPanelHeight - kFooterH + 8, 150, 34, hwnd_,
+                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, kMargin,
+                    defaults::kPanelHeight - kFooterH + 8, 150, 34, hwnd_,
                     reinterpret_cast<HMENU>(IDC_BTN_KILL), hInstance, nullptr);
     CreateWindowExW(0, L"BUTTON", L"收起",
                     WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
@@ -106,43 +148,150 @@ bool ProcessPanel::create(HINSTANCE hInstance)
                     defaults::kPanelHeight - kFooterH + 8, 80, 34, hwnd_,
                     reinterpret_cast<HMENU>(IDC_BTN_HIDE), hInstance, nullptr);
 
-    refreshList();
+    refreshData();
     return true;
 }
 
-void ProcessPanel::refreshList()
+void ProcessPanel::refreshData()
 {
     if (!listBox_)
         return;
 
-    // 刷新会重建列表，按 PID 记住用户已勾选的项，避免勾选每 2 秒被清空
+    // pid -> procs 下标索引（每次刷新重建，供绘制与操作查找）
+    pidIndex_.clear();
+    const auto& procs = g_app.scanner.processes();
+    for (size_t i = 0; i < procs.size(); ++i)
+        pidIndex_[procs[i].pid] = i;
+
+    // 结构签名：pid 集合。不变则只重绘数值（不重排、不动滚动）
+    std::vector<uint32_t> pids;
+    pids.reserve(procs.size());
+    for (const auto& p : procs)
+        pids.push_back(p.pid);
+    std::sort(pids.begin(), pids.end());
+
+    if (rows_.empty() || pids != lastPids_) {
+        rebuildRows();
+        lastPids_ = std::move(pids);
+    } else {
+        // 结构未变：只重绘数值，保持行序与滚动位置
+        InvalidateRect(listBox_, nullptr, FALSE);
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void ProcessPanel::rebuildRows()
+{
+    // ---- 保存现场：滚动位置、勾选 pid、展开状态 ----
+    const int topIndex = listBox_
+                             ? static_cast<int>(SendMessageW(listBox_, LB_GETTOPINDEX,
+                                                             0, 0))
+                             : 0;
     std::vector<uint32_t> selectedPids;
-    const int selCount = SendMessageW(listBox_, LB_GETSELCOUNT, 0, 0);
-    if (selCount > 0) {
-        std::vector<int> sel(static_cast<size_t>(selCount));
-        SendMessageW(listBox_, LB_GETSELITEMS, selCount,
-                     reinterpret_cast<LPARAM>(sel.data()));
-        const auto& old = g_app.scanner.processes();
-        for (int i : sel) {
-            const size_t idx = static_cast<size_t>(
-                SendMessageW(listBox_, LB_GETITEMDATA, i, 0));
-            if (idx < old.size())
-                selectedPids.push_back(old[idx].pid);
+    if (listBox_) {
+        const int selCount = SendMessageW(listBox_, LB_GETSELCOUNT, 0, 0);
+        if (selCount > 0) {
+            std::vector<int> sel(static_cast<size_t>(selCount));
+            SendMessageW(listBox_, LB_GETSELITEMS, selCount,
+                         reinterpret_cast<LPARAM>(sel.data()));
+            for (int i : sel) {
+                if (i < 0 || static_cast<size_t>(i) >= rows_.size())
+                    continue;
+                for (uint32_t pid : rows_[static_cast<size_t>(i)].pids)
+                    selectedPids.push_back(pid);
+            }
+        }
+    }
+    expandedNames_.clear();
+    for (const PanelRow& r : rows_)
+        if (r.isGroup && r.expanded)
+            expandedNames_.insert(r.name);
+
+    // ---- 按应用（同名 exe）分组，组按合计内存降序 ----
+    std::map<std::wstring, std::vector<uint32_t>> groups;
+    for (const auto& p : g_app.scanner.processes())
+        groups[p.name].push_back(p.pid);
+
+    struct GroupData {
+        std::wstring name;
+        std::vector<uint32_t> pids;
+        uint64_t mem = 0;
+    };
+    std::vector<GroupData> ordered;
+    ordered.reserve(groups.size());
+    for (auto& [name, pids] : groups) {
+        uint64_t mem = 0;
+        for (uint32_t pid : pids) {
+            auto it = pidIndex_.find(pid);
+            if (it != pidIndex_.end())
+                mem += g_app.scanner.processes()[it->second].workingSet;
+        }
+        ordered.push_back(GroupData{name, pids, mem});
+    }
+    std::sort(ordered.begin(), ordered.end(),
+              [](const GroupData& a, const GroupData& b) {
+                  return a.mem != b.mem ? a.mem > b.mem : a.name < b.name;
+              });
+
+    // ---- 生成行模型：组行 + （展开时）子行 ----
+    rows_.clear();
+    for (GroupData& g : ordered) {
+        PanelRow row;
+        row.isGroup = true;
+        row.name = g.name;
+        row.pids = g.pids;
+        row.expanded = expandedNames_.count(g.name) > 0;
+        rows_.push_back(row);
+        if (row.expanded) {
+            for (uint32_t pid : g.pids) {
+                PanelRow child;
+                child.isGroup = false;
+                child.name = g.name;
+                child.pids = {pid};
+                rows_.push_back(std::move(child));
+            }
         }
     }
 
+    // ---- 重建 listbox 内容并恢复现场 ----
+    if (!listBox_)
+        return;
     SendMessageW(listBox_, LB_RESETCONTENT, 0, 0);
-    const auto& procs = g_app.scanner.processes();
-    for (size_t i = 0; i < procs.size(); ++i) {
-        std::wstring label = procs[i].name;
-        const int idx = SendMessageW(listBox_, LB_ADDSTRING, 0,
-                                     reinterpret_cast<LPARAM>(label.c_str()));
-        SendMessageW(listBox_, LB_SETITEMDATA, idx, static_cast<LPARAM>(i));
-        if (std::find(selectedPids.begin(), selectedPids.end(), procs[i].pid) !=
-            selectedPids.end())
-            SendMessageW(listBox_, LB_SETSEL, TRUE, idx);
+    for (size_t i = 0; i < rows_.size(); ++i) {
+        SendMessageW(listBox_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L""));
+        SendMessageW(listBox_, LB_SETITEMDATA, static_cast<WPARAM>(i),
+                     static_cast<LPARAM>(i));
+        SendMessageW(listBox_, LB_SETITEMHEIGHT, static_cast<WPARAM>(i),
+                     MAKELPARAM(rows_[i].isGroup ? kGroupRowH : kChildRowH, 0));
     }
-    InvalidateRect(hwnd_, nullptr, FALSE);
+
+    // 恢复勾选：子行按 pid 精确恢复；组行按"全部成员都被勾选"恢复
+    for (size_t i = 0; i < rows_.size(); ++i) {
+        const PanelRow& r = rows_[i];
+        bool select = !r.pids.empty();
+        for (uint32_t pid : r.pids) {
+            if (std::find(selectedPids.begin(), selectedPids.end(), pid) ==
+                selectedPids.end()) {
+                select = false;
+                break;
+            }
+        }
+        if (select)
+            SendMessageW(listBox_, LB_SETSEL, TRUE, static_cast<WPARAM>(i));
+    }
+
+    const int maxTop = rows_.size() > 3 ? static_cast<int>(rows_.size() - 3) : 0;
+    SendMessageW(listBox_, LB_SETTOPINDEX,
+                 std::min(topIndex, maxTop) < 0 ? 0
+                                                : std::min(topIndex, maxTop),
+                 0);
+}
+
+void ProcessPanel::rescanAndResort()
+{
+    g_app.scanner.refresh(g_app.protection);
+    lastPids_.clear(); // 强制下次刷新重建行模型（重新分组排序）
+    refreshData();
 }
 
 void ProcessPanel::show()
@@ -161,7 +310,7 @@ void ProcessPanel::show()
         y = std::max(0, std::min(y, sh - defaults::kPanelHeight));
         SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
     }
-    refreshList();
+    rescanAndResort(); // 打开面板 = 重新扫描并按内存排序
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
     SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -195,21 +344,27 @@ void ProcessPanel::onPaint()
     SetTextColor(mem, theme::TEXT_MAIN);
     TextOutW(mem, kMargin + 4, 10, L"进程管理", 4);
 
-    // 右上角：自动清理状态 + 关闭按钮
+    // 自动清理状态
     const wchar_t* autoTag =
         g_app.autoCleaner.enabled() ? L"● 自动清理中" : L"○ 自动清理已停";
     SelectObject(mem, smallFont);
     SetTextColor(mem, g_app.autoCleaner.enabled() ? theme::ACCENT : theme::TEXT_DIM);
-    TextOutW(mem, rc.right - 190, 14, autoTag, static_cast<int>(wcslen(autoTag)));
+    TextOutW(mem, rc.right - 210, 14, autoTag, static_cast<int>(wcslen(autoTag)));
 
+    // "↻" 重新扫描排序（悬停提示语在底部）
     SetTextColor(mem, theme::TEXT_DIM);
-    const wchar_t* close = L"✕";
-    TextOutW(mem, rc.right - 24, 12, close, 1);
+    TextOutW(mem, rc.right - 52, 12, L"↻", 1);
+    // 关闭 "✕"
+    TextOutW(mem, rc.right - 24, 12, L"✕", 1);
 
-    // 底部统计
-    wchar_t stats[96] = {};
-    const int count = static_cast<int>(g_app.scanner.processes().size());
-    swprintf(stats, 96, L"共 %d 个进程", count);
+    // 底部统计与操作提示
+    size_t groupCount = 0;
+    for (const PanelRow& r : rows_)
+        if (r.isGroup)
+            ++groupCount;
+    wchar_t stats[128] = {};
+    swprintf(stats, 128, L"%zu 个应用 · %zu 个进程 · 双击组行展开", groupCount,
+             g_app.scanner.processes().size());
     SelectObject(mem, smallFont);
     SetTextColor(mem, theme::TEXT_DIM);
     TextOutW(mem, kMargin + 4, rc.bottom - 16, stats,
@@ -221,8 +376,12 @@ void ProcessPanel::onPaint()
 
 void ProcessPanel::onMeasureItem(MEASUREITEMSTRUCT* mis)
 {
-    if (mis->CtlType == ODT_LISTBOX)
-        mis->itemHeight = 44;
+    if (mis->CtlType != ODT_LISTBOX)
+        return;
+    if (mis->itemID < rows_.size())
+        mis->itemHeight = rows_[mis->itemID].isGroup ? kGroupRowH : kChildRowH;
+    else
+        mis->itemHeight = kGroupRowH;
 }
 
 void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
@@ -263,70 +422,97 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
 
     if (dis->CtlType != ODT_LISTBOX || dis->itemID == static_cast<UINT>(-1))
         return;
-
-    const size_t idx = static_cast<size_t>(SendMessageW(listBox_, LB_GETITEMDATA,
-                                                        dis->itemID, 0));
-    const auto& procs = g_app.scanner.processes();
-    if (idx >= procs.size())
+    if (dis->itemID >= rows_.size())
         return;
-    const ProcessInfo& p = procs[idx];
+    const PanelRow& row = rows_[dis->itemID];
 
     const bool selected = SendMessageW(listBox_, LB_GETSEL, dis->itemID, 0) > 0;
     DrawUtils::fillRect(dis->hDC, dis->rcItem, theme::BG);
     if (selected)
         DrawUtils::fillRect(dis->hDC, dis->rcItem, theme::LIST_SEL);
 
+    const bool canKill = rowCanTerminate(row, pidIndex_);
     const int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
-
-    // 复选框（受保护进程画成锁定样式，不可勾选）
-    RECT box{dis->rcItem.left + 10, cy - 7, dis->rcItem.left + 24, cy + 7};
-    if (p.canTerminate) {
-        DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::BORDER);
-        if (selected)
-            DrawUtils::fillRoundRect(dis->hDC, RECT{box.left + 3, box.top + 3,
-                                                    box.right - 2, box.bottom - 2},
-                                     2, theme::ACCENT);
-    } else {
-        DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::BORDER);
-    }
 
     SetBkMode(dis->hDC, TRANSPARENT);
     static HFONT nameFont = DrawUtils::font(13, true);
+    static HFONT childFont = DrawUtils::font(11, false);
     static HFONT tagFont = DrawUtils::font(10, false);
     static HFONT numFont = DrawUtils::font(12, false);
 
-    // 进程名
-    RECT nameRc{dis->rcItem.left + 32, cy - 10, dis->rcItem.right - 150,
-                cy + 10};
-    SelectObject(dis->hDC, nameFont);
-    SetTextColor(dis->hDC, p.canTerminate ? theme::TEXT_MAIN : theme::PROTECTED);
-    DrawTextW(dis->hDC, p.name.c_str(), static_cast<int>(p.name.size()), &nameRc,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    // 右侧数值区：内存 + CPU
+    wchar_t memText[32] = {};
+    swprintf(memText, 32, L"%ls", DrawUtils::formatBytes(rowMemory(row, pidIndex_)).c_str());
+    wchar_t cpuText[24] = {};
+    swprintf(cpuText, 24, L"%.1f%%", rowCpu(row, pidIndex_));
 
-    // 保护等级标签
-    const std::wstring tag = levelTag(p);
-    if (!tag.empty()) {
+    if (row.isGroup) {
+        // ---- 组行：展开箭头 + 应用名 ×N + 合计数值 ----
+        const wchar_t* arrow = row.expanded ? L"▼" : L"▶";
         SelectObject(dis->hDC, tagFont);
-        SetTextColor(dis->hDC, levelTagColor(p.level));
-        RECT tagRc{nameRc.right - 64, cy - 9, nameRc.right + 10, cy + 9};
-        DrawTextW(dis->hDC, tag.c_str(), static_cast<int>(tag.size()), &tagRc,
-                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dis->hDC, theme::TEXT_DIM);
+        TextOutW(dis->hDC, dis->rcItem.left + 8, cy - 7, arrow, 1);
+
+        wchar_t nameText[256] = {};
+        if (row.pids.size() > 1)
+            swprintf(nameText, 256, L"%ls ×%zu", row.name.c_str(), row.pids.size());
+        else
+            swprintf(nameText, 256, L"%ls", row.name.c_str());
+
+        RECT nameRc{dis->rcItem.left + 26, cy - 10, dis->rcItem.right - 150,
+                    cy + 10};
+        SelectObject(dis->hDC, nameFont);
+        SetTextColor(dis->hDC, canKill ? theme::TEXT_MAIN : theme::PROTECTED);
+        DrawTextW(dis->hDC, nameText, static_cast<int>(wcslen(nameText)), &nameRc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        const std::wstring tag = rowTag(row, pidIndex_);
+        if (!tag.empty()) {
+            SelectObject(dis->hDC, tagFont);
+            SetTextColor(dis->hDC, theme::PROTECTED);
+            RECT tagRc{nameRc.right - 64, cy - 9, nameRc.right + 10, cy + 9};
+            DrawTextW(dis->hDC, tag.c_str(), static_cast<int>(tag.size()), &tagRc,
+                      DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
+
+        // 复选框
+        RECT box{dis->rcItem.left + 6, cy - 7, dis->rcItem.left + 20, cy + 7};
+        DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::BORDER);
+        if (selected)
+            DrawUtils::fillRoundRect(dis->hDC,
+                                     RECT{box.left + 3, box.top + 3, box.right - 2,
+                                          box.bottom - 2},
+                                     2, canKill ? theme::ACCENT : theme::PROTECTED);
+    } else {
+        // ---- 子行：缩进 + pid + 数值 ----
+        RECT box{dis->rcItem.left + 26, cy - 6, dis->rcItem.left + 38, cy + 6};
+        DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::BORDER);
+        if (selected)
+            DrawUtils::fillRoundRect(dis->hDC,
+                                     RECT{box.left + 3, box.top + 3, box.right - 2,
+                                          box.bottom - 2},
+                                     2, canKill ? theme::ACCENT : theme::PROTECTED);
+
+        wchar_t nameText[64] = {};
+        if (row.pids.size() == 1)
+            swprintf(nameText, 64, L"PID %u", row.pids[0]);
+        RECT nameRc{dis->rcItem.left + 46, cy - 9, dis->rcItem.right - 150,
+                    cy + 9};
+        SelectObject(dis->hDC, childFont);
+        SetTextColor(dis->hDC, canKill ? theme::TEXT_DIM : theme::PROTECTED);
+        DrawTextW(dis->hDC, nameText, static_cast<int>(wcslen(nameText)), &nameRc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
-    // 内存
-    wchar_t memText[32] = {};
-    swprintf(memText, 32, L"%s",
-             DrawUtils::formatBytes(p.workingSet).c_str());
+    // 内存与 CPU（组/子行通用布局）
     SelectObject(dis->hDC, numFont);
-    SetTextColor(dis->hDC, theme::TEXT_MAIN);
+    SetTextColor(dis->hDC, canKill ? theme::TEXT_MAIN : theme::PROTECTED);
     RECT memRc{dis->rcItem.right - 150, cy - 9, dis->rcItem.right - 84, cy + 9};
     DrawTextW(dis->hDC, memText, static_cast<int>(wcslen(memText)), &memRc,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-    // CPU
-    wchar_t cpuText[24] = {};
-    swprintf(cpuText, 24, L"%.1f%%", p.cpuPercent);
-    SetTextColor(dis->hDC, p.cpuPercent > 15.0 ? theme::WARN : theme::TEXT_DIM);
+    const double cpu = rowCpu(row, pidIndex_);
+    SetTextColor(dis->hDC, cpu > 15.0 ? theme::WARN : theme::TEXT_DIM);
     RECT cpuRc{dis->rcItem.right - 76, cy - 9, dis->rcItem.right - 10, cy + 9};
     DrawTextW(dis->hDC, cpuText, static_cast<int>(wcslen(cpuText)), &cpuRc,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
@@ -352,35 +538,42 @@ void ProcessPanel::killSelected()
     SendMessageW(listBox_, LB_GETSELITEMS, count,
                  reinterpret_cast<LPARAM>(sel.data()));
 
-    const auto& procs = g_app.scanner.processes();
-
-    // 组装确认信息（受保护进程自动剔除）
+    // 展开勾选行为进程集合（组行 = 组内全部进程），按 pid 去重
     std::vector<const ProcessInfo*> targets;
+    std::vector<uint32_t> seen;
     int skipped = 0;
+    std::map<std::wstring, int> nameCount;
     for (int i : sel) {
-        const size_t idx = static_cast<size_t>(
-            SendMessageW(listBox_, LB_GETITEMDATA, i, 0));
-        if (idx >= procs.size())
+        if (i < 0 || static_cast<size_t>(i) >= rows_.size())
             continue;
-        if (procs[idx].canTerminate)
-            targets.push_back(&procs[idx]);
-        else
-            ++skipped;
+        const PanelRow& row = rows_[static_cast<size_t>(i)];
+        for (uint32_t pid : row.pids) {
+            if (std::find(seen.begin(), seen.end(), pid) != seen.end())
+                continue;
+            seen.push_back(pid);
+            const ProcessInfo* p = findProc(pidIndex_, pid);
+            if (!p)
+                continue;
+            if (p->canTerminate) {
+                targets.push_back(p);
+                ++nameCount[p->name];
+            } else {
+                ++skipped;
+            }
+        }
     }
     if (targets.empty()) {
-        MessageBoxW(hwnd_, L"所选进程全部受保护，无法结束。", defaults::kAppTitle,
+        MessageBoxW(hwnd_, L"所选应用全部受保护，无法结束。", defaults::kAppTitle,
                     MB_OK | MB_ICONINFORMATION);
         return;
     }
 
     std::wstring names;
-    for (size_t i = 0; i < targets.size() && i < 10; ++i) {
-        if (i)
+    for (const auto& [name, n] : nameCount) {
+        if (!names.empty())
             names += L"、";
-        names += targets[i]->name;
+        names += n > 1 ? name + L"(×" + std::to_wstring(n) + L")" : name;
     }
-    if (targets.size() > 10)
-        names += L" 等";
     std::wstring text = L"确定结束以下 " + std::to_wstring(targets.size()) +
                         L" 个进程吗？\r\n\r\n" + names;
     if (skipped > 0)
@@ -390,18 +583,18 @@ void ProcessPanel::killSelected()
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
         return;
 
-    int okCount = 0;
+    int failCount = 0;
     std::wstring failures;
     for (const ProcessInfo* p : targets) {
         const KillResult r = terminateProcessById(p->pid, p->name, p->level);
-        if (r.ok)
-            ++okCount;
-        else if (failures.size() < 400)
-            failures += (failures.empty() ? L"" : L"\r\n") + r.message;
+        if (!r.ok) {
+            ++failCount;
+            if (failures.size() < 400)
+                failures += (failures.empty() ? L"" : L"\r\n") + r.message;
+        }
     }
 
-    g_app.scanner.refresh(g_app.protection);
-    refreshList();
+    rescanAndResort();
     InvalidateRect(g_app.ball ? g_app.ball->hwnd() : nullptr, nullptr, FALSE);
 
     if (!failures.empty())
@@ -409,14 +602,34 @@ void ProcessPanel::killSelected()
                     MB_OK | MB_ICONWARNING);
 }
 
+void ProcessPanel::onListDoubleClick()
+{
+    const int index = static_cast<int>(SendMessageW(listBox_, LB_GETCARETINDEX, 0, 0));
+    if (index < 0 || static_cast<size_t>(index) >= rows_.size())
+        return;
+    const PanelRow& row = rows_[static_cast<size_t>(index)];
+    if (!row.isGroup)
+        return;
+
+    // 展开/收起该应用分组（保持滚动与勾选）
+    const int topIndex =
+        static_cast<int>(SendMessageW(listBox_, LB_GETTOPINDEX, 0, 0));
+    if (row.expanded)
+        expandedNames_.erase(row.name);
+    else
+        expandedNames_.insert(row.name);
+    rebuildRows();
+    SendMessageW(listBox_, LB_SETTOPINDEX,
+                 topIndex < static_cast<int>(rows_.size()) ? topIndex : 0, 0);
+}
+
 void ProcessPanel::onListContextMenu(LPARAM lParam)
 {
-    if (!listBox_)
+    if (!listBox_ || rows_.empty())
         return;
 
     POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
     if (pt.x == -1 && pt.y == -1) {
-        // 键盘触发：使用当前选中项
         const int sel = SendMessageW(listBox_, LB_GETCARETINDEX, 0, 0);
         if (sel < 0)
             return;
@@ -429,25 +642,17 @@ void ProcessPanel::onListContextMenu(LPARAM lParam)
         ScreenToClient(listBox_, &pt);
     }
 
-    // 命中项（HIWORD 非零表示点在客户区外）
     const int hit = static_cast<int>(SendMessageW(listBox_, LB_ITEMFROMPOINT, 0,
                                                   MAKELPARAM(pt.x, pt.y)));
     if (HIWORD(hit))
         return;
     const int index = LOWORD(hit);
-    if (index < 0)
+    if (index < 0 || static_cast<size_t>(index) >= rows_.size())
         return;
+    const PanelRow& row = rows_[static_cast<size_t>(index)];
 
-    // 右键同时选中该行（若可结束）
-    const size_t idx = static_cast<size_t>(
-        SendMessageW(listBox_, LB_GETITEMDATA, index, 0));
-    const auto& procs = g_app.scanner.processes();
-    if (idx >= procs.size())
-        return;
-    const ProcessInfo& p = procs[idx];
-
-    // 让右键行的复选框勾上（多选语义）
-    if (p.canTerminate)
+    // 右键行同时勾选（若可结束）
+    if (rowCanTerminate(row, pidIndex_))
         SendMessageW(listBox_, LB_SETSEL, TRUE, index);
 
     POINT screenPt = pt;
@@ -462,21 +667,37 @@ void ProcessPanel::onListContextMenu(LPARAM lParam)
         MI_REMOVE_AUTO = 5,
     };
 
-    if (p.canTerminate)
-        AppendMenuW(menu, MF_STRING, MI_KILL, L"结束进程");
-    else
+    const wchar_t* scope = row.isGroup && row.pids.size() > 1 ? L"该应用全部进程"
+                                                              : L"该进程";
+    if (rowCanTerminate(row, pidIndex_)) {
+        wchar_t killLabel[128] = {};
+        swprintf(killLabel, 128, L"结束%ls（%zu 个进程）", scope, row.pids.size());
+        AppendMenuW(menu, MF_STRING, MI_KILL, killLabel);
+    } else {
         AppendMenuW(menu, MF_STRING | MF_GRAYED, MI_KILL, L"结束进程（受保护）");
+    }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    if (g_app.protection.isWhitelisted(p.name)) {
-        AppendMenuW(menu, MF_STRING, MI_REMOVE_WHITE, L"从白名单移除");
+    // 名单按进程名匹配，会作用于同名全部进程
+    const std::wstring menuScope =
+        row.isGroup ? L"该应用全部进程" : L"同名进程";
+    if (g_app.protection.isWhitelisted(row.name)) {
+        wchar_t label[128] = {};
+        swprintf(label, 128, L"从白名单移除（%ls）", menuScope.c_str());
+        AppendMenuW(menu, MF_STRING, MI_REMOVE_WHITE, label);
     } else {
-        AppendMenuW(menu, MF_STRING, MI_ADD_WHITE, L"加入白名单（永不结束）");
+        wchar_t label[128] = {};
+        swprintf(label, 128, L"加入白名单，永不结束（%ls）", menuScope.c_str());
+        AppendMenuW(menu, MF_STRING, MI_ADD_WHITE, label);
     }
-    if (g_app.protection.inAutoClean(p.name)) {
-        AppendMenuW(menu, MF_STRING, MI_REMOVE_AUTO, L"从自动清理名单移除");
+    if (g_app.protection.inAutoClean(row.name)) {
+        wchar_t label[128] = {};
+        swprintf(label, 128, L"从自动清理名单移除（%ls）", menuScope.c_str());
+        AppendMenuW(menu, MF_STRING, MI_REMOVE_AUTO, label);
     } else {
-        AppendMenuW(menu, MF_STRING, MI_ADD_AUTO, L"加入自动清理名单");
+        wchar_t label[128] = {};
+        swprintf(label, 128, L"加入自动清理名单（%ls）", menuScope.c_str());
+        AppendMenuW(menu, MF_STRING, MI_ADD_AUTO, label);
     }
 
     const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
@@ -485,46 +706,48 @@ void ProcessPanel::onListContextMenu(LPARAM lParam)
 
     switch (cmd) {
     case MI_KILL: {
-        const KillResult r = terminateProcessById(p.pid, p.name, p.level);
-        if (!r.ok)
-            MessageBoxW(hwnd_, r.message.c_str(), L"结束进程失败",
+        int failCount = 0;
+        std::wstring failures;
+        for (uint32_t pid : row.pids) {
+            const ProcessInfo* p = findProc(pidIndex_, pid);
+            if (!p || !p->canTerminate)
+                continue;
+            const KillResult r = terminateProcessById(p->pid, p->name, p->level);
+            if (!r.ok) {
+                ++failCount;
+                if (failures.size() < 400)
+                    failures += (failures.empty() ? L"" : L"\r\n") + r.message;
+            }
+        }
+        if (!failures.empty())
+            MessageBoxW(hwnd_, failures.c_str(), L"结束进程失败",
                         MB_OK | MB_ICONWARNING);
         break;
     }
     case MI_ADD_WHITE:
-        g_app.protection.addToWhitelist(p.name);
-        g_app.protection.removeFromAutoClean(p.name);
+        g_app.protection.addToWhitelist(row.name);
+        g_app.protection.removeFromAutoClean(row.name);
         syncConfigFromProtection();
         break;
     case MI_REMOVE_WHITE:
-        g_app.protection.removeFromWhitelist(p.name);
+        g_app.protection.removeFromWhitelist(row.name);
         syncConfigFromProtection();
         break;
     case MI_ADD_AUTO:
-        g_app.protection.addToAutoClean(p.name);
-        g_app.protection.removeFromWhitelist(p.name);
+        g_app.protection.addToAutoClean(row.name);
+        g_app.protection.removeFromWhitelist(row.name);
         syncConfigFromProtection();
         break;
     case MI_REMOVE_AUTO:
-        g_app.protection.removeFromAutoClean(p.name);
+        g_app.protection.removeFromAutoClean(row.name);
         syncConfigFromProtection();
         break;
     default:
         return;
     }
 
-    // 重新分类并刷新
-    g_app.scanner.refresh(g_app.protection);
-    refreshList();
+    rescanAndResort();
     InvalidateRect(g_app.ball ? g_app.ball->hwnd() : nullptr, nullptr, FALSE);
-}
-
-void ProcessPanel::onCommand(int id, int notifyCode)
-{
-    if (id == IDC_BTN_KILL && notifyCode == BN_CLICKED)
-        killSelected();
-    else if (id == IDC_BTN_HIDE && notifyCode == BN_CLICKED)
-        hide();
 }
 
 LRESULT CALLBACK ProcessPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
@@ -547,25 +770,32 @@ LRESULT CALLBACK ProcessPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
             self->onDrawItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lParam));
         return TRUE;
     case WM_COMMAND:
-        if (self)
-            self->onCommand(LOWORD(wParam), HIWORD(wParam));
+        if (!self)
+            return 0;
+        if (LOWORD(wParam) == IDC_BTN_KILL && HIWORD(wParam) == BN_CLICKED)
+            self->killSelected();
+        else if (LOWORD(wParam) == IDC_BTN_HIDE && HIWORD(wParam) == BN_CLICKED)
+            self->hide();
+        else if (LOWORD(wParam) == IDC_LIST && HIWORD(wParam) == LBN_DBLCLK)
+            self->onListDoubleClick();
         return 0;
     case WM_APP_REFRESH:
         if (self)
-            self->refreshList();
+            self->refreshData();
         return 0;
     case WM_CONTEXTMENU:
         if (self && reinterpret_cast<HWND>(wParam) == self->listBox_)
             self->onListContextMenu(lParam);
         return 0;
     case WM_LBUTTONDOWN: {
-        // 点击标题栏"✕"关闭
         const int x = GET_X_LPARAM(lParam);
         const int y = GET_Y_LPARAM(lParam);
         RECT rc;
         GetClientRect(hwnd, &rc);
-        if (x > rc.right - 36 && y < 32 && self)
-            self->hide();
+        if (self && x > rc.right - 36 && y < 32)
+            self->hide(); // ✕
+        else if (self && x > rc.right - 64 && x <= rc.right - 36 && y < 32)
+            self->rescanAndResort(); // ↻
         else if (self)
             PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0); // 标题栏拖动
         return 0;
