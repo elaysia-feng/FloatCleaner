@@ -59,6 +59,8 @@ bool FloatingBall::create(HINSTANCE hInstance)
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
+    wc.hIconSm = wc.hIcon;
     wc.lpszClassName = L"FloatCleanerBall";
     if (!RegisterClassExW(&wc))
         return false;

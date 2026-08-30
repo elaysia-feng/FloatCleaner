@@ -61,6 +61,8 @@ bool ProcessPanel::create(HINSTANCE hInstance)
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
+    wc.hIconSm = wc.hIcon;
     wc.lpszClassName = L"FloatCleanerPanel";
     if (!RegisterClassExW(&wc))
         return false;

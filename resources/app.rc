@@ -1,5 +1,8 @@
 #include <windows.h>
 
+// 应用图标（exe 文件 / 任务栏 / 窗口类共用），由 tools/make_icon.cpp 生成
+1 ICON "app.ico"
+
 #define FC_VERSION_MAJOR 1
 #define FC_VERSION_MINOR 0
 #define FC_VERSION_PATCH 0
