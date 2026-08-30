@@ -20,10 +20,12 @@ namespace fc {
 namespace {
 
 constexpr int IDC_LIST = 100;
+constexpr int IDC_SEARCH = 103;
 constexpr int IDC_BTN_KILL = 101;
 constexpr int IDC_BTN_HIDE = 102;
 
 constexpr int kHeaderH = 44;
+constexpr int kSearchH = 26;   // 搜索框行高
 constexpr int kFooterH = 56;
 constexpr int kMargin = 10;
 constexpr int kGroupRowH = 38;
@@ -151,6 +153,13 @@ void drawChibi(HDC hdc, int x, int y, int size)
     RestoreDC(hdc, saved);
 }
 
+// 编辑框子类化（占位：保留扩展点）
+LRESULT CALLBACK editSubclassProc(HWND h, UINT msg, WPARAM w, LPARAM l,
+                                  UINT_PTR, DWORD_PTR)
+{
+    return DefSubclassProc(h, msg, w, l);
+}
+
 // owner-draw 按钮子类化：转发 hover 状态给面板
 LRESULT CALLBACK buttonSubclassProc(HWND h, UINT msg, WPARAM w, LPARAM l,
                                     UINT_PTR, DWORD_PTR ref)
@@ -266,14 +275,34 @@ bool ProcessPanel::create(HINSTANCE hInstance)
                                   defaults::kPanelRadius * 2);
     SetWindowRgn(hwnd_, rgn, FALSE);
 
+    // 搜索框（左标签 + 输入框，EN_CHANGE 实时过滤）
+    HWND searchLabel = CreateWindowExW(0, L"STATIC", L"搜索",
+                                       WS_CHILD | WS_VISIBLE | SS_CENTER,
+                                       kMargin + 6, kHeaderH + 4, 34, 18, hwnd_,
+                                       nullptr, hInstance, nullptr);
+    SendMessageW(searchLabel, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(DrawUtils::font(11, false)), TRUE);
+    editBox_ = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", nullptr,
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        kMargin + 46, kHeaderH + 2,
+        defaults::kPanelWidth - 2 * (kMargin + 4) - 10 - 42, 22, hwnd_,
+        reinterpret_cast<HMENU>(IDC_SEARCH), hInstance, nullptr);
+    if (!editBox_)
+        return false;
+    SendMessageW(editBox_, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(DrawUtils::font(12, false)), TRUE);
+    SetWindowSubclass(editBox_, editSubclassProc, 1,
+                      reinterpret_cast<DWORD_PTR>(hwnd_));
+
     // 列表卡片由 onPaint 绘制在父窗口上；listbox 内缩融入卡片，滚动条自绘
     listBox_ = CreateWindowExW(
         0, L"LISTBOX", nullptr,
         WS_CHILD | WS_VISIBLE | LBS_OWNERDRAWVARIABLE | LBS_MULTIPLESEL |
             LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
-        kMargin + 4, kHeaderH - 2,
+        kMargin + 4, kHeaderH + kSearchH - 2,
         defaults::kPanelWidth - 2 * (kMargin + 4) - 10,
-        defaults::kPanelHeight - kHeaderH - kFooterH + 4, hwnd_,
+        defaults::kPanelHeight - kHeaderH - kSearchH - kFooterH + 4, hwnd_,
         reinterpret_cast<HMENU>(IDC_LIST), hInstance, nullptr);
     if (!listBox_)
         return false;
@@ -320,9 +349,10 @@ void ProcessPanel::refreshData()
         pids.push_back(p.pid);
     std::sort(pids.begin(), pids.end());
 
-    if (rows_.empty() || pids != lastPids_) {
+    if (rows_.empty() || pids != lastPids_ || filter_ != lastFilter_) {
         rebuildRows();
         lastPids_ = std::move(pids);
+        lastFilter_ = filter_;
     } else {
         // 结构未变：只重绘数值，保持行序与滚动位置
         InvalidateRect(listBox_, nullptr, FALSE);
@@ -358,9 +388,18 @@ void ProcessPanel::rebuildRows()
             expandedNames_.insert(r.name);
 
     // ---- 按应用（同名 exe）分组，组按合计内存降序 ----
+    // 搜索过滤：组名不含关键词的整组跳过
     std::map<std::wstring, std::vector<uint32_t>> groups;
-    for (const auto& p : g_app.scanner.processes())
+    for (const auto& p : g_app.scanner.processes()) {
+        if (!filter_.empty()) {
+            std::wstring lower = p.name;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](wchar_t c) { return static_cast<wchar_t>(::towlower(c)); });
+            if (lower.find(filter_) == std::wstring::npos)
+                continue;
+        }
         groups[p.name].push_back(p.pid);
+    }
 
     struct GroupData {
         std::wstring name;
@@ -1102,6 +1141,17 @@ LRESULT CALLBACK ProcessPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
             self->hide();
         else if (LOWORD(wParam) == IDC_LIST && HIWORD(wParam) == LBN_DBLCLK)
             self->onListDoubleClick();
+        else if (LOWORD(wParam) == IDC_SEARCH && HIWORD(wParam) == EN_CHANGE) {
+            // 实时过滤：读输入框 -> 小写 -> 触发行模型重建
+            wchar_t buf[64] = {};
+            GetWindowTextW(self->editBox_, buf, 64);
+            std::wstring f = buf;
+            std::transform(f.begin(), f.end(), f.begin(),
+                           [](wchar_t c) { return static_cast<wchar_t>(::towlower(c)); });
+            self->filter_ = std::move(f);
+            self->lastPids_.clear();
+            self->refreshData();
+        }
         return 0;
     case WM_APP_REFRESH:
         if (self)
@@ -1161,6 +1211,8 @@ LRESULT CALLBACK ProcessPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
             PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0); // 标题栏拖动
         return 0;
     }
+    case WM_CTLCOLOREDIT:     // 搜索框深色化
+    case WM_CTLCOLORSTATIC:    // 搜索标签等静态控件
     case WM_CTLCOLORLISTBOX: {
         // 画刷跟随主题（切换主题后重建）
         static HBRUSH bgBrush = nullptr;

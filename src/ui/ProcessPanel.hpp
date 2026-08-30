@@ -55,9 +55,12 @@ private:
 
     HWND hwnd_ = nullptr;
     HWND listBox_ = nullptr;
+    HWND editBox_ = nullptr; // 进程搜索框
     DrawUtils::CachedCanvas buffer_;
     bool visible_ = false;
     Zone hoverZone_ = Zone::None;
+    std::wstring filter_;     // 搜索过滤（小写）
+    std::wstring lastFilter_; // 上次构建行模型时的过滤词
 
     // 滑入动画（150ms，结束即杀定时器）
     bool animActive_ = false;
