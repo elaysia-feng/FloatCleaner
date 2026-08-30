@@ -28,10 +28,13 @@ void popupMainMenu(HWND anchor)
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"退出");
 
     SetForegroundWindow(anchor); // 保证菜单点击空白处能收起
-    const int cmd =
-        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
-                       GetSystemMetrics(SM_CXSCREEN) - 220,
-                       GetSystemMetrics(SM_CYSCREEN) - 220, 0, anchor, nullptr);
+    POINT pt;
+    if (!GetCursorPos(&pt)) {
+        pt = POINT{GetSystemMetrics(SM_CXSCREEN) - 220,
+                   GetSystemMetrics(SM_CYSCREEN) - 220};
+    }
+    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0,
+                                   anchor, nullptr);
     DestroyMenu(menu);
 
     switch (cmd) {

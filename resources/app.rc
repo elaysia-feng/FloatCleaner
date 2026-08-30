@@ -5,7 +5,7 @@
 
 #define FC_VERSION_MAJOR 1
 #define FC_VERSION_MINOR 0
-#define FC_VERSION_PATCH 0
+#define FC_VERSION_PATCH 1
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION    FC_VERSION_MAJOR,FC_VERSION_MINOR,FC_VERSION_PATCH,0
@@ -22,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "FloatCleaner contributors"
             VALUE "FileDescription",  "FloatCleaner - 进程清理悬浮窗"
-            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "FileVersion",      "1.0.1.0"
             VALUE "InternalName",     "FloatCleaner"
             VALUE "LegalCopyright",   "MIT License"
             VALUE "OriginalFilename", "FloatCleaner.exe"
             VALUE "ProductName",      "FloatCleaner"
-            VALUE "ProductVersion",   "1.0.0.0"
+            VALUE "ProductVersion",   "1.0.1.0"
         END
     END
     BLOCK "VarFileInfo"

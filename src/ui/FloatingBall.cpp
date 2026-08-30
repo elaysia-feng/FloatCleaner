@@ -5,6 +5,7 @@
 #include "DrawUtils.hpp"
 #include "ProcessPanel.hpp"
 #include "Theme.hpp"
+#include "TrayIcon.hpp"
 
 #include <windowsx.h>
 
@@ -480,8 +481,10 @@ LRESULT CALLBACK FloatingBall::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
     case WM_ERASEBKGND:
         return 1; // 全部自绘，避免闪烁
     case WM_DESTROY:
-        if (self)
-            self->buffer_.release();
+        // 必须移除托盘图标并投递 WM_QUIT，否则消息循环永不退出，进程僵死
+        if (g_app.tray)
+            g_app.tray->remove();
+        PostQuitMessage(0);
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);

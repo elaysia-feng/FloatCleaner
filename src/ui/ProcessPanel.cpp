@@ -114,6 +114,23 @@ void ProcessPanel::refreshList()
 {
     if (!listBox_)
         return;
+
+    // 刷新会重建列表，按 PID 记住用户已勾选的项，避免勾选每 2 秒被清空
+    std::vector<uint32_t> selectedPids;
+    const int selCount = SendMessageW(listBox_, LB_GETSELCOUNT, 0, 0);
+    if (selCount > 0) {
+        std::vector<int> sel(static_cast<size_t>(selCount));
+        SendMessageW(listBox_, LB_GETSELITEMS, selCount,
+                     reinterpret_cast<LPARAM>(sel.data()));
+        const auto& old = g_app.scanner.processes();
+        for (int i : sel) {
+            const size_t idx = static_cast<size_t>(
+                SendMessageW(listBox_, LB_GETITEMDATA, i, 0));
+            if (idx < old.size())
+                selectedPids.push_back(old[idx].pid);
+        }
+    }
+
     SendMessageW(listBox_, LB_RESETCONTENT, 0, 0);
     const auto& procs = g_app.scanner.processes();
     for (size_t i = 0; i < procs.size(); ++i) {
@@ -121,6 +138,9 @@ void ProcessPanel::refreshList()
         const int idx = SendMessageW(listBox_, LB_ADDSTRING, 0,
                                      reinterpret_cast<LPARAM>(label.c_str()));
         SendMessageW(listBox_, LB_SETITEMDATA, idx, static_cast<LPARAM>(i));
+        if (std::find(selectedPids.begin(), selectedPids.end(), procs[i].pid) !=
+            selectedPids.end())
+            SendMessageW(listBox_, LB_SETSEL, TRUE, idx);
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
