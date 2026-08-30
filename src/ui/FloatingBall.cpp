@@ -243,31 +243,43 @@ void FloatingBall::onPaint()
     SetBkMode(mem, TRANSPARENT);
 
     if (!isDocked()) {
-        // 圆形球体：深色圆底 + 状态色圆环 + 居中百分比
-        HBRUSH bg = CreateSolidBrush(theme::BG);
+        // 圆形球体：夜樱渐变圆珠 + 状态色描边 + 高光
+        DrawUtils::fillGradient(mem, rc, RGB(255, 172, 206), RGB(150, 118, 226));
+
         HPEN ring = CreatePen(PS_SOLID, 3, status);
-        HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(mem, bg));
+        HBRUSH hollow = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(mem, hollow));
         HPEN oldPen = static_cast<HPEN>(SelectObject(mem, ring));
         Ellipse(mem, rc.left + 2, rc.top + 2, rc.right - 1, rc.bottom - 1);
         SelectObject(mem, oldBrush);
         SelectObject(mem, oldPen);
-        DeleteObject(bg);
         DeleteObject(ring);
+
+        // 左上高光（宝石质感）
+        HBRUSH gloss = CreateSolidBrush(RGB(255, 232, 244));
+        HPEN glossPen = CreatePen(PS_SOLID, 1, RGB(255, 232, 244));
+        oldBrush = static_cast<HBRUSH>(SelectObject(mem, gloss));
+        oldPen = static_cast<HPEN>(SelectObject(mem, glossPen));
+        Ellipse(mem, rc.left + 9, rc.top + 7, rc.left + 24, rc.top + 15);
+        SelectObject(mem, oldBrush);
+        SelectObject(mem, oldPen);
+        DeleteObject(gloss);
+        DeleteObject(glossPen);
 
         static HFONT pctFont = DrawUtils::font(15, true);
         static HFONT subFont = DrawUtils::font(10, false);
+
         SelectObject(mem, pctFont);
-        SetTextColor(mem, status);
         SIZE sz{};
         GetTextExtentPoint32W(mem, pct, static_cast<int>(wcslen(pct)), &sz);
-        TextOutW(mem, (rc.right - sz.cx) / 2, 11, pct,
-                 static_cast<int>(wcslen(pct)));
+        DrawUtils::textWithShadow(mem, (rc.right - sz.cx) / 2, 11, pct,
+                                  theme::TEXT_MAIN, RGB(70, 40, 90));
 
         // 第二行：已用/总内存（GB）
         SelectObject(mem, subFont);
-        SetTextColor(mem, theme::TEXT_DIM);
         GetTextExtentPoint32W(mem, usedText, static_cast<int>(wcslen(usedText)),
                               &sz);
+        SetTextColor(mem, RGB(244, 226, 252));
         TextOutW(mem, (rc.right - sz.cx) / 2, 35, usedText,
                  static_cast<int>(wcslen(usedText)));
 
@@ -284,8 +296,8 @@ void FloatingBall::onPaint()
         DeleteObject(db);
         DeleteObject(dp);
     } else {
-        // 贴边条：圆头小条 + 状态点 + 竖排百分比
-        DrawUtils::fillRoundRect(mem, rc, defaults::kDockThickness / 2, theme::BG);
+        // 贴边条：夜樱渐变圆头小条 + 状态点 + 竖排数值
+        DrawUtils::fillGradient(mem, rc, theme::HEADER_TOP, theme::HEADER_BOTTOM);
         DrawUtils::outlineRoundRect(mem, rc, defaults::kDockThickness / 2,
                                     theme::BORDER);
 
@@ -304,10 +316,10 @@ void FloatingBall::onPaint()
 
             // 竖排：百分比 + 已用内存
             wchar_t vertical[48] = {};
-            swprintf(vertical, 48, L"%s %.1fG", pct,
+            swprintf(vertical, 48, L"%ls %.1fG", pct,
                      static_cast<double>(usedBytes) / (1ull << 30));
             SelectObject(mem, verticalFont());
-            SetTextColor(mem, status);
+            SetTextColor(mem, theme::ACCENT);
             const int cy = (rc.bottom + defaults::kDockThickness) / 2 + 6;
             SIZE sz{};
             GetTextExtentPoint32W(mem, vertical, static_cast<int>(wcslen(vertical)),
@@ -332,9 +344,9 @@ void FloatingBall::onPaint()
 
             static HFONT small = DrawUtils::font(11, true);
             SelectObject(mem, small);
-            SetTextColor(mem, status);
+            SetTextColor(mem, theme::ACCENT);
             wchar_t horizontal[48] = {};
-            swprintf(horizontal, 48, L"%s %.1fG", pct,
+            swprintf(horizontal, 48, L"%ls %.1fG", pct,
                      static_cast<double>(usedBytes) / (1ull << 30));
             SetTextAlign(mem, TA_BASELINE | TA_LEFT);
             TextOutW(mem, defaults::kDockThickness + 6, cy + 5, horizontal,

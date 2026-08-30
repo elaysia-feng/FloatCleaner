@@ -37,6 +37,54 @@ void outlineRoundRect(HDC hdc, const RECT& rc, int radius, COLORREF color)
     DeleteObject(pen);
 }
 
+COLORREF lerpColor(COLORREF a, COLORREF b, double t)
+{
+    return RGB(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * t,
+               GetGValue(a) + (GetGValue(b) - GetGValue(a)) * t,
+               GetBValue(a) + (GetBValue(b) - GetBValue(a)) * t);
+}
+
+void fillGradient(HDC hdc, const RECT& rc, COLORREF top, COLORREF bottom)
+{
+    const int height = rc.bottom - rc.top;
+    if (height <= 0)
+        return;
+    if (height == 1) {
+        fillRect(hdc, rc, top);
+        return;
+    }
+    for (int y = 0; y < height; ++y) {
+        RECT line{rc.left, rc.top + y, rc.right, rc.top + y + 1};
+        fillRect(hdc, line,
+                 lerpColor(top, bottom, static_cast<double>(y) / (height - 1)));
+    }
+}
+
+void fillGradientH(HDC hdc, const RECT& rc, COLORREF left, COLORREF right)
+{
+    const int width = rc.right - rc.left;
+    if (width <= 0)
+        return;
+    if (width == 1) {
+        fillRect(hdc, rc, left);
+        return;
+    }
+    for (int x = 0; x < width; ++x) {
+        RECT line{rc.left + x, rc.top, rc.left + x + 1, rc.bottom};
+        fillRect(hdc, line,
+                 lerpColor(left, right, static_cast<double>(x) / (width - 1)));
+    }
+}
+
+void textWithShadow(HDC hdc, int x, int y, const std::wstring& text,
+                    COLORREF main, COLORREF shadow)
+{
+    SetTextColor(hdc, shadow);
+    TextOutW(hdc, x + 1, y + 1, text.c_str(), static_cast<int>(text.size()));
+    SetTextColor(hdc, main);
+    TextOutW(hdc, x, y, text.c_str(), static_cast<int>(text.size()));
+}
+
 HFONT font(int size, bool bold)
 {
     // size 以像素为单位

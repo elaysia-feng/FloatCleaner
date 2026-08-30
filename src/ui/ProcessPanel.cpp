@@ -334,27 +334,37 @@ void ProcessPanel::onPaint()
     DrawUtils::CachedCanvas& buffer = buffer_;
     HDC mem = buffer.begin(hdc, rc.right, rc.bottom);
 
-    DrawUtils::fillRoundRect(mem, rc, defaults::kPanelRadius, theme::BG);
+    // 夜空渐变底（窗口圆角区域负责裁剪）
+    DrawUtils::fillGradient(mem, rc, theme::BG_TOP, theme::BG_BOTTOM);
+
+    // 标题栏：稍亮的夜空渐变带
+    RECT header{0, 0, rc.right, kHeaderH};
+    DrawUtils::fillGradient(mem, header, theme::HEADER_TOP, theme::HEADER_BOTTOM);
 
     SetBkMode(mem, TRANSPARENT);
     static HFONT titleFont = DrawUtils::font(15, true);
     static HFONT smallFont = DrawUtils::font(11, false);
+    static HFONT decoFont = DrawUtils::font(11, false);
 
+    // 标题（带柔影）+ 星星点缀
     SelectObject(mem, titleFont);
-    SetTextColor(mem, theme::TEXT_MAIN);
-    TextOutW(mem, kMargin + 4, 10, L"进程管理", 4);
+    DrawUtils::textWithShadow(mem, kMargin + 4, 12, L"✦ 进程管理",
+                              theme::TEXT_MAIN, RGB(40, 24, 64));
+    SelectObject(mem, decoFont);
+    SetTextColor(mem, theme::LAVENDER);
+    TextOutW(mem, kMargin + 118, 14, L"✧", 1);
 
-    // 自动清理状态
+    // 自动清理状态（爱心）
     const wchar_t* autoTag =
-        g_app.autoCleaner.enabled() ? L"● 自动清理中" : L"○ 自动清理已停";
+        g_app.autoCleaner.enabled() ? L"♥ 自动清理中" : L"♡ 自动清理已停";
     SelectObject(mem, smallFont);
     SetTextColor(mem, g_app.autoCleaner.enabled() ? theme::ACCENT : theme::TEXT_DIM);
     TextOutW(mem, rc.right - 210, 14, autoTag, static_cast<int>(wcslen(autoTag)));
 
-    // "↻" 重新扫描排序（悬停提示语在底部）
-    SetTextColor(mem, theme::TEXT_DIM);
+    // "↻" 重新扫描排序 + 关闭 "✕"
+    SetTextColor(mem, theme::LAVENDER);
     TextOutW(mem, rc.right - 52, 12, L"↻", 1);
-    // 关闭 "✕"
+    SetTextColor(mem, theme::TEXT_DIM);
     TextOutW(mem, rc.right - 24, 12, L"✕", 1);
 
     // 底部统计与操作提示
@@ -363,7 +373,7 @@ void ProcessPanel::onPaint()
         if (r.isGroup)
             ++groupCount;
     wchar_t stats[128] = {};
-    swprintf(stats, 128, L"%zu 个应用 · %zu 个进程 · 双击组行展开", groupCount,
+    swprintf(stats, 128, L"★ %zu 个应用 · %zu 个进程 · 双击组行展开", groupCount,
              g_app.scanner.processes().size());
     SelectObject(mem, smallFont);
     SetTextColor(mem, theme::TEXT_DIM);
@@ -393,11 +403,20 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         const int selCount = listBox_
                                  ? SendMessageW(listBox_, LB_GETSELCOUNT, 0, 0)
                                  : 0;
-        COLORREF bg = isKill ? (selCount > 0 ? theme::DANGER : theme::BG_CARD)
-                             : theme::BG_CARD;
-        if (pressed)
-            bg = theme::BG_HOVER;
-        DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8, bg);
+        if (isKill) {
+            // 结束按钮：樱粉渐变（有选中时点亮）
+            if (selCount > 0)
+                DrawUtils::fillGradientH(dis->hDC, dis->rcItem,
+                                         pressed ? RGB(255, 120, 168)
+                                                 : theme::ACCENT,
+                                         pressed ? RGB(214, 84, 130)
+                                                 : theme::ACCENT_DEEP);
+            else
+                DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8, theme::BG_CARD);
+        } else {
+            DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8,
+                                     pressed ? theme::BG_HOVER : theme::BG_CARD);
+        }
         DrawUtils::outlineRoundRect(dis->hDC, dis->rcItem, 8, theme::BORDER);
 
         SetBkMode(dis->hDC, TRANSPARENT);
@@ -405,7 +424,7 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         GetWindowTextW(dis->hwndItem, text, 64);
         std::wstring label = text;
         if (isKill && selCount > 0)
-            label = L"结束所选 (" + std::to_wstring(selCount) + L")";
+            label = L"♥ 结束所选 (" + std::to_wstring(selCount) + L")";
         static HFONT btnFont = DrawUtils::font(13, true);
         SelectObject(dis->hDC, btnFont);
         SetTextColor(dis->hDC,

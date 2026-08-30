@@ -44,15 +44,15 @@ void render(int size, uint8_t* px) // px: size*size*4, 顶层在下标 0
     DeleteObject(clear);
 
     // 圆底：轻微纵向渐变（薄荷绿 -> 深一点的绿）
-    const COLORREF top = RGB(0, 214, 150);
-    const COLORREF bottom = RGB(0, 172, 120);
+    const COLORREF top = RGB(255, 168, 206);
+    const COLORREF bottom = RGB(155, 123, 232);
     for (int y = 0; y < size; ++y) {
         SetPixelV(mem, size / 2, y, lerp(top, bottom, (double)y / size));
     }
     // 用画笔做实心圆（GDI 无抗锯齿，16px 以下换实色更干净）
     HPEN ring = CreatePen(PS_SOLID, size >= 32 ? std::max(1, size / 32) : 1,
-                          size >= 32 ? RGB(0, 190, 132) : RGB(0, 199, 140));
-    HBRUSH bg = CreateSolidBrush(size >= 32 ? RGB(0, 199, 140) : RGB(0, 199, 140));
+                          size >= 32 ? RGB(226, 105, 158) : RGB(255, 138, 178));
+    HBRUSH bg = CreateSolidBrush(RGB(255, 138, 178));
     HBRUSH oldBrush = (HBRUSH)SelectObject(mem, bg);
     HPEN oldPen = (HPEN)SelectObject(mem, ring);
     Ellipse(mem, 1, 1, size - 1, size - 1);
