@@ -22,6 +22,42 @@ constexpr COLORREF BG_CARD    = BTN_PURPLE;
 constexpr COLORREF BG_HOVER   = RGB(112, 88, 164);
 constexpr COLORREF DANGER     = RGB(255, 92, 122);
 
+// 行层次
+constexpr COLORREF ROW_SEP    = RGB(52, 44, 84);   // 行分隔线（BG 与 BORDER 中间值）
+constexpr COLORREF ROW_PROTECT= RGB(44, 38, 74);   // 受保护行底色（微暗一档）
+
+// 标签 pill（预混底色 + 提亮文字）
+constexpr COLORREF TAG_BG_AUTO = RGB(74, 44, 76);
+constexpr COLORREF TAG_FG_AUTO = RGB(255, 168, 200);
+constexpr COLORREF TAG_BG_SYS  = RGB(58, 50, 88);
+constexpr COLORREF TAG_FG_SYS  = RGB(158, 148, 188);
+
+// 滚动条
+constexpr COLORREF SCROLL_TRACK = RGB(56, 46, 88);
+constexpr COLORREF SCROLL_THUMB = RGB(120, 104, 170);
+
+// 悬浮球（宝石感分层 + 反光）
+constexpr COLORREF BALL_TOP    = RGB(255, 172, 206);
+constexpr COLORREF BALL_BOTTOM = RGB(150, 118, 226);
+constexpr COLORREF BALL_DEEP   = RGB(120, 92, 200);
+constexpr COLORREF BALL_MID    = RGB(196, 140, 214);
+constexpr COLORREF BALL_GLOSS  = RGB(255, 232, 244);
+constexpr COLORREF BALL_GLOSS_CORE = RGB(255, 246, 252);
+constexpr COLORREF BALL_RIM_DARK   = RGB(60, 40, 90);
+constexpr COLORREF BALL_ARC        = RGB(255, 190, 220);
+constexpr COLORREF BALL_TEXT_SHADOW= RGB(70, 40, 90);
+
+// 贴边条（沿厚度方向渐变：屏幕内侧亮、贴边暗）
+constexpr COLORREF DOCK_INNER = RGB(88, 74, 140);
+constexpr COLORREF DOCK_OUTER = RGB(40, 34, 66);
+constexpr COLORREF DOCK_HIGHLIGHT = RGB(160, 140, 220);
+constexpr COLORREF DOT_BACKING    = RGB(50, 40, 80);
+
+// 花瓣（预混暗色，若隐若现）
+constexpr COLORREF PETAL_HEADER = RGB(120, 86, 150);
+constexpr COLORREF PETAL_HEADER2= RGB(104, 78, 134);
+constexpr COLORREF PETAL_BALL   = RGB(236, 150, 190);
+
 // 强调色
 constexpr COLORREF ACCENT     = RGB(255, 138, 178); // 樱花粉（主）
 constexpr COLORREF ACCENT_DEEP= RGB(226, 100, 148); // 樱粉深（按钮底）

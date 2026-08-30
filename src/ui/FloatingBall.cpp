@@ -17,6 +17,7 @@ namespace {
 
 constexpr UINT_PTR kTimerRefresh = 1;
 constexpr UINT_PTR kTimerAutoClean = 2;
+constexpr UINT_PTR kTimerPulse = 3; // 高占用呼吸环（仅在占用 >=85% 时运行）
 
 Dock edgeFromConfig(int v)
 {
@@ -243,99 +244,152 @@ void FloatingBall::onPaint()
     SetBkMode(mem, TRANSPARENT);
 
     if (!isDocked()) {
-        // 圆形球体：夜樱渐变圆珠 + 状态色描边 + 高光
-        DrawUtils::fillGradient(mem, rc, RGB(255, 172, 206), RGB(150, 118, 226));
+        // ---- 夜樱宝石球：分层渐变 + 暗衬环 + 两段高光 + 底部反光弧 ----
+        DrawUtils::fillGradient(mem, rc, theme::BALL_TOP, theme::BALL_BOTTOM);
 
-        HPEN ring = CreatePen(PS_SOLID, 3, status);
+        // 状态环：暗衬环(1px) + 内缩 3px 的状态环；呼吸/悬停时加粗
+        HPEN rimPen = CreatePen(PS_SOLID, 1, theme::BALL_RIM_DARK);
         HBRUSH hollow = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
         HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(mem, hollow));
-        HPEN oldPen = static_cast<HPEN>(SelectObject(mem, ring));
-        Ellipse(mem, rc.left + 2, rc.top + 2, rc.right - 1, rc.bottom - 1);
+        HPEN oldPen = static_cast<HPEN>(SelectObject(mem, rimPen));
+        Ellipse(mem, rc.left + 1, rc.top + 1, rc.right, rc.bottom);
+        DeleteObject(rimPen);
+
+        int ringWidth = 3;
+        if (pulseActive_)
+            ringWidth = 3 + (pulsePhase_ < 3 ? pulsePhase_ : 5 - pulsePhase_);
+        else if (hover_)
+            ringWidth = 4;
+        HPEN ring = CreatePen(PS_SOLID, ringWidth, status);
+        oldPen = static_cast<HPEN>(SelectObject(mem, ring));
+        Ellipse(mem, rc.left + 3, rc.top + 3, rc.right - 2, rc.bottom - 2);
         SelectObject(mem, oldBrush);
         SelectObject(mem, oldPen);
         DeleteObject(ring);
 
-        // 左上高光（宝石质感）
-        HBRUSH gloss = CreateSolidBrush(RGB(255, 232, 244));
-        HPEN glossPen = CreatePen(PS_SOLID, 1, RGB(255, 232, 244));
+        // 左上两段式高光（玻璃反射）
+        HBRUSH gloss = CreateSolidBrush(theme::BALL_GLOSS);
+        HPEN glossPen = CreatePen(PS_SOLID, 1, RGB(255, 214, 232));
         oldBrush = static_cast<HBRUSH>(SelectObject(mem, gloss));
         oldPen = static_cast<HPEN>(SelectObject(mem, glossPen));
-        Ellipse(mem, rc.left + 9, rc.top + 7, rc.left + 24, rc.top + 15);
-        SelectObject(mem, oldBrush);
-        SelectObject(mem, oldPen);
+        Ellipse(mem, rc.left + 9, rc.top + 7, rc.left + 25, rc.top + 16);
         DeleteObject(gloss);
         DeleteObject(glossPen);
+        HBRUSH glossCore = CreateSolidBrush(theme::BALL_GLOSS_CORE);
+        HPEN corePen = CreatePen(PS_SOLID, 1, theme::BALL_GLOSS_CORE);
+        oldBrush = static_cast<HBRUSH>(SelectObject(mem, glossCore));
+        oldPen = static_cast<HPEN>(SelectObject(mem, corePen));
+        Ellipse(mem, rc.left + 13, rc.top + 9, rc.left + 21, rc.top + 13);
+        SelectObject(mem, oldBrush);
+        SelectObject(mem, oldPen);
+        DeleteObject(glossCore);
+        DeleteObject(corePen);
 
-        static HFONT pctFont = DrawUtils::font(15, true);
+        // 底部反光弧（环境光）
+        HPEN arcPen = CreatePen(PS_SOLID, 2, theme::BALL_ARC);
+        oldPen = static_cast<HPEN>(SelectObject(mem, arcPen));
+        oldBrush = static_cast<HBRUSH>(SelectObject(mem, hollow));
+        Arc(mem, rc.left + 12, rc.top + 30, rc.right - 8, rc.bottom + 22,
+            rc.right - 14, rc.bottom - 8, rc.left + 16, rc.bottom - 8);
+        SelectObject(mem, oldBrush);
+        SelectObject(mem, oldPen);
+        DeleteObject(arcPen);
+
+        // 右上沿一片暗粉花瓣（与高光错开）
+        DrawUtils::drawPetal(mem, rc.right - 14, rc.top + 12, 4,
+                             theme::PETAL_BALL);
+
+        static HFONT pctFont = DrawUtils::font(16, true);
         static HFONT subFont = DrawUtils::font(10, false);
 
         SelectObject(mem, pctFont);
         SIZE sz{};
         GetTextExtentPoint32W(mem, pct, static_cast<int>(wcslen(pct)), &sz);
         DrawUtils::textWithShadow(mem, (rc.right - sz.cx) / 2, 11, pct,
-                                  theme::TEXT_MAIN, RGB(70, 40, 90));
+                                  theme::TEXT_MAIN, theme::BALL_TEXT_SHADOW);
 
         // 第二行：已用/总内存（GB）
         SelectObject(mem, subFont);
         GetTextExtentPoint32W(mem, usedText, static_cast<int>(wcslen(usedText)),
                               &sz);
         SetTextColor(mem, RGB(244, 226, 252));
-        TextOutW(mem, (rc.right - sz.cx) / 2, 35, usedText,
+        TextOutW(mem, (rc.right - sz.cx) / 2, 36, usedText,
                  static_cast<int>(wcslen(usedText)));
-
-        // 自动清理状态小点
-        const COLORREF dot =
-            g_app.autoCleaner.enabled() ? theme::ACCENT : theme::TEXT_DIM;
-        HBRUSH db = CreateSolidBrush(dot);
-        HPEN dp = CreatePen(PS_SOLID, 1, dot);
-        oldBrush = static_cast<HBRUSH>(SelectObject(mem, db));
-        oldPen = static_cast<HPEN>(SelectObject(mem, dp));
-        Ellipse(mem, rc.right - 16, rc.bottom - 16, rc.right - 10, rc.bottom - 10);
-        SelectObject(mem, oldBrush);
-        SelectObject(mem, oldPen);
-        DeleteObject(db);
-        DeleteObject(dp);
     } else {
-        // 贴边条：夜樱渐变圆头小条 + 状态点 + 竖排数值
-        DrawUtils::fillGradient(mem, rc, theme::HEADER_TOP, theme::HEADER_BOTTOM);
+        // ---- 贴边条：沿厚度方向的圆柱渐变 + 高光线 + 衬环状态点 ----
+        if (dock_ == Dock::Left || dock_ == Dock::Right)
+            DrawUtils::fillGradientH(mem, rc, theme::DOCK_INNER, theme::DOCK_OUTER);
+        else
+            DrawUtils::fillGradient(mem, rc, theme::DOCK_INNER, theme::DOCK_OUTER);
         DrawUtils::outlineRoundRect(mem, rc, defaults::kDockThickness / 2,
                                     theme::BORDER);
 
+        // 内高光线（离屏幕最远的 1/4 厚度处）
         if (dock_ == Dock::Left || dock_ == Dock::Right) {
-            // 状态点放在半圆头中心（距屏幕边缘 th/2 处）
+            const int hx = dock_ == Dock::Left ? rc.right - 6 : 5;
+            DrawUtils::fillRect(mem, RECT{hx, 10, hx + 1, rc.bottom - 10},
+                                theme::DOCK_HIGHLIGHT);
+        } else {
+            const int hy = dock_ == Dock::Top ? rc.bottom - 6 : 5;
+            DrawUtils::fillRect(mem, RECT{10, hy, rc.right - 10, hy + 1},
+                                theme::DOCK_HIGHLIGHT);
+        }
+
+        if (dock_ == Dock::Left || dock_ == Dock::Right) {
+            // 状态点：暗衬环 + 状态色
             const int cx = rc.right / 2;
+            HBRUSH back = CreateSolidBrush(theme::DOT_BACKING);
+            HPEN backPen = CreatePen(PS_SOLID, 1, theme::DOT_BACKING);
+            HBRUSH ob = static_cast<HBRUSH>(SelectObject(mem, back));
+            HPEN op = static_cast<HPEN>(SelectObject(mem, backPen));
+            Ellipse(mem, cx - 4, 6, cx + 4, 16);
+            SelectObject(mem, ob);
+            SelectObject(mem, op);
+            DeleteObject(back);
+            DeleteObject(backPen);
             HBRUSH db = CreateSolidBrush(status);
             HPEN dp = CreatePen(PS_SOLID, 1, status);
-            HBRUSH ob = static_cast<HBRUSH>(SelectObject(mem, db));
-            HPEN op = static_cast<HPEN>(SelectObject(mem, dp));
+            ob = static_cast<HBRUSH>(SelectObject(mem, db));
+            op = static_cast<HPEN>(SelectObject(mem, dp));
             Ellipse(mem, cx - 3, 8, cx + 3, 14);
             SelectObject(mem, ob);
             SelectObject(mem, op);
             DeleteObject(db);
             DeleteObject(dp);
 
-            // 竖排：百分比 + 已用内存
+            // 竖排数值：逐字堆叠（旋转文字会被 GDI 关闭 ClearType，堆叠保持清晰）
             wchar_t vertical[48] = {};
-            swprintf(vertical, 48, L"%ls %.1fG", pct,
+            swprintf(vertical, 48, L"%ls%.1fG", pct,
                      static_cast<double>(usedBytes) / (1ull << 30));
             SelectObject(mem, verticalFont());
             SetTextColor(mem, theme::ACCENT);
-            const int cy = (rc.bottom + defaults::kDockThickness) / 2 + 6;
-            SIZE sz{};
-            GetTextExtentPoint32W(mem, vertical, static_cast<int>(wcslen(vertical)),
-                                  &sz);
-            TEXTMETRICW tm{};
-            GetTextMetricsW(mem, &tm);
-            SetTextAlign(mem, TA_BASELINE | TA_CENTER);
-            TextOutW(mem, cx + tm.tmHeight / 2 - 1, cy - sz.cx / 2, vertical,
-                     static_cast<int>(wcslen(vertical)));
+            SetTextAlign(mem, TA_CENTER | TA_TOP);
+            const int len = static_cast<int>(wcslen(vertical));
+            const int avail = rc.bottom - 24;
+            const int step = std::max(9, avail / std::max(1, len));
+            int y = 20;
+            for (const wchar_t* p = vertical; *p; ++p) {
+                RECT charRc{cx - 8, y, cx + 8, y + step};
+                DrawTextW(mem, p, 1, &charRc,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                y += step;
+            }
             SetTextAlign(mem, TA_LEFT | TA_TOP);
         } else {
             const int cy = rc.bottom / 2;
+            HBRUSH back = CreateSolidBrush(theme::DOT_BACKING);
+            HPEN backPen = CreatePen(PS_SOLID, 1, theme::DOT_BACKING);
+            HBRUSH ob = static_cast<HBRUSH>(SelectObject(mem, back));
+            HPEN op = static_cast<HPEN>(SelectObject(mem, backPen));
+            Ellipse(mem, 6, cy - 4, 16, cy + 4);
+            SelectObject(mem, ob);
+            SelectObject(mem, op);
+            DeleteObject(back);
+            DeleteObject(backPen);
             HBRUSH db = CreateSolidBrush(status);
             HPEN dp = CreatePen(PS_SOLID, 1, status);
-            HBRUSH ob = static_cast<HBRUSH>(SelectObject(mem, db));
-            HPEN op = static_cast<HPEN>(SelectObject(mem, dp));
+            ob = static_cast<HBRUSH>(SelectObject(mem, db));
+            op = static_cast<HPEN>(SelectObject(mem, dp));
             Ellipse(mem, 8, cy - 3, 14, cy + 3);
             SelectObject(mem, ob);
             SelectObject(mem, op);
@@ -363,11 +417,28 @@ void FloatingBall::onTimer(UINT_PTR id)
 {
     if (id == kTimerRefresh) {
         g_app.scanner.refresh(g_app.protection);
+
+        // 高占用呼吸环：只有占用 >=85% 时才存在定时器（动画纪律：结束即杀）
+        const MemoryStatus ms = SystemMonitor::query();
+        const bool shouldPulse = ms.percent >= 85;
+        if (shouldPulse && !pulseActive_) {
+            pulseActive_ = true;
+            pulsePhase_ = 0;
+            SetTimer(hwnd_, kTimerPulse, 200, nullptr);
+        } else if (!shouldPulse && pulseActive_) {
+            pulseActive_ = false;
+            KillTimer(hwnd_, kTimerPulse);
+        }
+
         InvalidateRect(hwnd_, nullptr, FALSE);
         if (g_app.panel && g_app.panel->visible())
             PostMessageW(g_app.panel->hwnd(), WM_APP_REFRESH, 0, 0);
     } else if (id == kTimerAutoClean) {
         g_app.autoCleaner.tick(g_app.scanner.processes());
+    } else if (id == kTimerPulse) {
+        // 呼吸环：环宽 3~5px 正弦半周期摆动
+        pulsePhase_ = (pulsePhase_ + 1) % 5;
+        InvalidateRect(hwnd_, nullptr, FALSE);
     }
 }
 
@@ -487,8 +558,22 @@ LRESULT CALLBACK FloatingBall::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
             self->onMouseDown(lParam);
         return 0;
     case WM_MOUSEMOVE:
-        if (self)
+        if (self) {
             self->onMouseMove(lParam);
+            if (!self->hover_ && !self->dragging_) {
+                // 悬停反馈：状态环加粗一档暗示可抓取
+                TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+                TrackMouseEvent(&tme);
+                self->hover_ = true;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+        return 0;
+    case WM_MOUSELEAVE:
+        if (self && self->hover_) {
+            self->hover_ = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
     case WM_LBUTTONUP:
         if (self)

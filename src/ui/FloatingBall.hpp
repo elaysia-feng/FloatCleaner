@@ -45,6 +45,9 @@ private:
     Dock dock_ = Dock::Right;
     bool dragging_ = false;
     bool moved_ = false;
+    bool hover_ = false;       // 鼠标悬停（环加粗暗示可抓取）
+    bool pulseActive_ = false; // 高占用呼吸环定时器是否在跑
+    int pulsePhase_ = 0;       // 呼吸相位（决定环宽 3~5px）
     POINT dragStart_{};
     POINT windowStart_{};
 };

@@ -48,10 +48,22 @@ private:
     void rescanAndResort();
     void syncConfigFromProtection();
 
+    // hover 体系：按钮/标题栏小按钮的悬停反馈
+    enum class Zone { None, Kill, Hide, Rescan, Close };
+    Zone zoneAt(int x, int y) const;
+    void setHoverZone(Zone z);
+
     HWND hwnd_ = nullptr;
     HWND listBox_ = nullptr;
     DrawUtils::CachedCanvas buffer_;
     bool visible_ = false;
+    Zone hoverZone_ = Zone::None;
+
+    // 滑入动画（150ms，结束即杀定时器）
+    bool animActive_ = false;
+    DWORD animStart_ = 0;
+    POINT animTo_{};
+    int animDir_ = 1;
 
     std::vector<PanelRow> rows_;
     std::vector<uint32_t> lastPids_; // 行模型对应的 pid 集合（升序），用于结构变化检测

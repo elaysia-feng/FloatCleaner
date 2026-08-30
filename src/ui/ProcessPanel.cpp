@@ -7,6 +7,7 @@
 #include "Theme.hpp"
 
 #include <windowsx.h>
+#include <commctrl.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -26,6 +27,34 @@ constexpr int kFooterH = 56;
 constexpr int kMargin = 10;
 constexpr int kGroupRowH = 38;
 constexpr int kChildRowH = 26;
+constexpr UINT_PTR kAnimTimer = 4;     // 滑入动画（150ms，结束即杀）
+constexpr int kCardPad = 4;            // 列表卡片与 listbox 的间隙
+constexpr UINT WM_APP_HOVER = WM_APP + 3; // 按钮子类 → 面板 hover 通知
+
+// listbox 子类化：滚动后让父窗口重绘自绘滚动条
+LRESULT CALLBACK listSubclassProc(HWND h, UINT msg, WPARAM w, LPARAM l,
+                                  UINT_PTR, DWORD_PTR ref)
+{
+    LRESULT r = DefSubclassProc(h, msg, w, l);
+    if (msg == WM_MOUSEWHEEL || msg == WM_KEYDOWN || msg == WM_VSCROLL)
+        InvalidateRect(reinterpret_cast<HWND>(ref), nullptr, FALSE);
+    return r;
+}
+
+// owner-draw 按钮子类化：转发 hover 状态给面板
+LRESULT CALLBACK buttonSubclassProc(HWND h, UINT msg, WPARAM w, LPARAM l,
+                                    UINT_PTR, DWORD_PTR ref)
+{
+    if (msg == WM_MOUSEMOVE) {
+        TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, h, 0};
+        TrackMouseEvent(&tme);
+        SendMessageW(reinterpret_cast<HWND>(ref), WM_APP_HOVER, GetDlgCtrlID(h),
+                     0);
+    } else if (msg == WM_MOUSELEAVE) {
+        SendMessageW(reinterpret_cast<HWND>(ref), WM_APP_HOVER, 0, 0);
+    }
+    return DefSubclassProc(h, msg, w, l);
+}
 
 const ProcessInfo* findProc(const std::unordered_map<uint32_t, size_t>& pidIndex,
                             uint32_t pid)
@@ -127,26 +156,37 @@ bool ProcessPanel::create(HINSTANCE hInstance)
                                   defaults::kPanelRadius * 2);
     SetWindowRgn(hwnd_, rgn, FALSE);
 
-    // WM_CREATE 时机已过，直接创建子控件
+    // 列表卡片由 onPaint 绘制在父窗口上；listbox 内缩融入卡片，滚动条自绘
     listBox_ = CreateWindowExW(
         0, L"LISTBOX", nullptr,
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_OWNERDRAWVARIABLE |
-            LBS_MULTIPLESEL | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
-        kMargin, kHeaderH, defaults::kPanelWidth - kMargin * 2,
-        defaults::kPanelHeight - kHeaderH - kFooterH, hwnd_,
+        WS_CHILD | WS_VISIBLE | LBS_OWNERDRAWVARIABLE | LBS_MULTIPLESEL |
+            LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
+        kMargin + 4, kHeaderH - 2,
+        defaults::kPanelWidth - 2 * (kMargin + 4) - 10,
+        defaults::kPanelHeight - kHeaderH - kFooterH + 4, hwnd_,
         reinterpret_cast<HMENU>(IDC_LIST), hInstance, nullptr);
     if (!listBox_)
         return false;
+    SetWindowSubclass(listBox_, listSubclassProc, 1,
+                      reinterpret_cast<DWORD_PTR>(hwnd_));
 
-    CreateWindowExW(0, L"BUTTON", L"结束所选进程",
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, kMargin,
-                    defaults::kPanelHeight - kFooterH + 8, 150, 34, hwnd_,
-                    reinterpret_cast<HMENU>(IDC_BTN_KILL), hInstance, nullptr);
-    CreateWindowExW(0, L"BUTTON", L"收起",
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                    defaults::kPanelWidth - kMargin - 80,
-                    defaults::kPanelHeight - kFooterH + 8, 80, 34, hwnd_,
-                    reinterpret_cast<HMENU>(IDC_BTN_HIDE), hInstance, nullptr);
+    HWND btnKill = CreateWindowExW(0, L"BUTTON", L"结束所选进程",
+                                   WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, kMargin,
+                                   defaults::kPanelHeight - kFooterH + 8, 150, 34,
+                                   hwnd_, reinterpret_cast<HMENU>(IDC_BTN_KILL),
+                                   hInstance, nullptr);
+    HWND btnHide = CreateWindowExW(0, L"BUTTON", L"收起",
+                                   WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                   defaults::kPanelWidth - kMargin - 80,
+                                   defaults::kPanelHeight - kFooterH + 8, 80, 34,
+                                   hwnd_, reinterpret_cast<HMENU>(IDC_BTN_HIDE),
+                                   hInstance, nullptr);
+    if (btnKill)
+        SetWindowSubclass(btnKill, buttonSubclassProc, 1,
+                          reinterpret_cast<DWORD_PTR>(hwnd_));
+    if (btnHide)
+        SetWindowSubclass(btnHide, buttonSubclassProc, 2,
+                          reinterpret_cast<DWORD_PTR>(hwnd_));
 
     refreshData();
     return true;
@@ -297,9 +337,12 @@ void ProcessPanel::rescanAndResort()
 void ProcessPanel::show()
 {
     // 贴着悬浮球弹出，并保证完整落在屏幕内
+    int finalX = CW_USEDEFAULT, finalY = CW_USEDEFAULT;
+    int ballCenterX = -1;
     if (g_app.ball && g_app.ball->hwnd()) {
         RECT br;
         GetWindowRect(g_app.ball->hwnd(), &br);
+        ballCenterX = (br.left + br.right) / 2;
         int x = br.right + 8;
         int y = br.top - 100;
         const int sw = GetSystemMetrics(SM_CXSCREEN);
@@ -308,10 +351,21 @@ void ProcessPanel::show()
             x = br.left - defaults::kPanelWidth - 8;
         x = std::max(0, std::min(x, sw - defaults::kPanelWidth));
         y = std::max(0, std::min(y, sh - defaults::kPanelHeight));
-        SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        finalX = x;
+        finalY = y;
     }
     rescanAndResort(); // 打开面板 = 重新扫描并按内存排序
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    if (finalX != CW_USEDEFAULT) {
+        // 滑入动画：从悬浮球一侧偏移 16px 滑入（150ms ease-out，结束即杀定时器）
+        animTo_ = POINT{finalX, finalY};
+        animDir_ = ballCenterX > finalX + defaults::kPanelWidth / 2 ? 1 : -1;
+        animStart_ = GetTickCount();
+        animActive_ = true;
+        SetWindowPos(hwnd_, nullptr, finalX + animDir_ * 16, finalY, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        SetTimer(hwnd_, kAnimTimer, 16, nullptr);
+    }
     SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     visible_ = true;
@@ -319,6 +373,10 @@ void ProcessPanel::show()
 
 void ProcessPanel::hide()
 {
+    if (animActive_) {
+        KillTimer(hwnd_, kAnimTimer);
+        animActive_ = false;
+    }
     ShowWindow(hwnd_, SW_HIDE);
     visible_ = false;
 }
@@ -341,43 +399,96 @@ void ProcessPanel::onPaint()
     RECT header{0, 0, rc.right, kHeaderH};
     DrawUtils::fillGradient(mem, header, theme::HEADER_TOP, theme::HEADER_BOTTOM);
 
+    // 标题栏右上静态花瓣点缀（预混暗色，若隐若现）
+    DrawUtils::drawPetal(mem, rc.right - 66, 12, 5, theme::PETAL_HEADER);
+    DrawUtils::drawPetal(mem, rc.right - 82, 24, 4, theme::PETAL_HEADER2);
+
     SetBkMode(mem, TRANSPARENT);
     static HFONT titleFont = DrawUtils::font(15, true);
     static HFONT smallFont = DrawUtils::font(11, false);
-    static HFONT decoFont = DrawUtils::font(11, false);
 
-    // 标题（带柔影）+ 星星点缀
+    // 标题：矢量星 + 文字（柔影）
     SelectObject(mem, titleFont);
-    DrawUtils::textWithShadow(mem, kMargin + 4, 12, L"✦ 进程管理",
+    DrawUtils::drawStar(mem, kMargin + 12, 22, 6, theme::LAVENDER);
+    DrawUtils::textWithShadow(mem, kMargin + 24, 12, L"进程管理",
                               theme::TEXT_MAIN, RGB(40, 24, 64));
-    SelectObject(mem, decoFont);
-    SetTextColor(mem, theme::LAVENDER);
-    TextOutW(mem, kMargin + 118, 14, L"✧", 1);
 
-    // 自动清理状态（爱心）
-    const wchar_t* autoTag =
-        g_app.autoCleaner.enabled() ? L"♥ 自动清理中" : L"♡ 自动清理已停";
+    // 自动清理状态（矢量爱心）
     SelectObject(mem, smallFont);
-    SetTextColor(mem, g_app.autoCleaner.enabled() ? theme::ACCENT : theme::TEXT_DIM);
-    TextOutW(mem, rc.right - 210, 14, autoTag, static_cast<int>(wcslen(autoTag)));
+    DrawUtils::drawHeart(mem, rc.right - 202, 19, 5,
+                         g_app.autoCleaner.enabled() ? theme::ACCENT
+                                                     : theme::TEXT_DIM);
+    SetTextColor(mem, g_app.autoCleaner.enabled() ? theme::ACCENT
+                                                  : theme::TEXT_DIM);
+    TextOutW(mem, rc.right - 192, 14, L"自动清理中", 5);
 
-    // "↻" 重新扫描排序 + 关闭 "✕"
-    SetTextColor(mem, theme::LAVENDER);
-    TextOutW(mem, rc.right - 52, 12, L"↻", 1);
-    SetTextColor(mem, theme::TEXT_DIM);
-    TextOutW(mem, rc.right - 24, 12, L"✕", 1);
+    // "↻" 重新扫描 + "✕" 关闭（矢量绘制，hover 高亮）
+    const bool rescanHover = hoverZone_ == Zone::Rescan;
+    const bool closeHover = hoverZone_ == Zone::Close;
+    if (rescanHover)
+        DrawUtils::fillRoundRect(mem, RECT{rc.right - 58, 8, rc.right - 36, 30}, 4,
+                                 theme::BG_HOVER);
+    if (closeHover)
+        DrawUtils::fillRoundRect(mem, RECT{rc.right - 32, 8, rc.right - 10, 30}, 4,
+                                 theme::BG_HOVER);
+    DrawUtils::drawRefresh(mem, rc.right - 47, 19, 7,
+                           rescanHover ? theme::TEXT_MAIN : theme::LAVENDER);
+    DrawUtils::drawX(mem, rc.right - 21, 19, 5,
+                     closeHover ? theme::TEXT_MAIN : theme::TEXT_DIM);
 
-    // 底部统计与操作提示
+    // 列表卡片：圆角底色吸收 listbox 方角
+    RECT card{kMargin, kHeaderH - 6, rc.right - kMargin,
+              rc.bottom - kFooterH + 2};
+    DrawUtils::fillRoundRect(mem, card, 10, theme::BG);
+    DrawUtils::outlineRoundRect(mem, card, 10, RGB(84, 70, 128));
+
+    // 自绘滚动条（行高超出可视区才画）
+    if (!rows_.empty() && listBox_) {
+        LONG totalH = 0;
+        for (const PanelRow& r : rows_)
+            totalH += r.isGroup ? kGroupRowH : kChildRowH;
+        RECT lbRc;
+        GetClientRect(listBox_, &lbRc);
+        MapWindowPoints(listBox_, hwnd_, reinterpret_cast<POINT*>(&lbRc), 2);
+        const int visibleH = lbRc.bottom - lbRc.top;
+        if (totalH > visibleH) {
+            const int top = static_cast<int>(
+                SendMessageW(listBox_, LB_GETTOPINDEX, 0, 0));
+            LONG beforeTop = 0;
+            for (int i = 0; i < top && i < static_cast<int>(rows_.size()); ++i)
+                beforeTop += rows_[static_cast<size_t>(i)].isGroup ? kGroupRowH
+                                                                   : kChildRowH;
+            const int trackTop = lbRc.top + 2;
+            const int trackH = visibleH - 4;
+            const int thumbH =
+                std::max(20, static_cast<int>(visibleH * visibleH / (totalH > 0 ? totalH : 1)));
+            const int scrollable = totalH - visibleH;
+            const int thumbY =
+                trackTop + (scrollable > 0
+                                ? beforeTop * (trackH - thumbH) / scrollable
+                                : 0);
+            DrawUtils::fillRoundRect(
+                mem, RECT{lbRc.right + 2, trackTop, lbRc.right + 6,
+                          lbRc.bottom - 2},
+                2, theme::SCROLL_TRACK);
+            DrawUtils::fillRoundRect(
+                mem, RECT{lbRc.right + 1, thumbY, lbRc.right + 7, thumbY + thumbH},
+                3, theme::SCROLL_THUMB);
+        }
+    }
+
+    // 底部统计与操作提示（矢量星 + 文字）
     size_t groupCount = 0;
     for (const PanelRow& r : rows_)
         if (r.isGroup)
             ++groupCount;
     wchar_t stats[128] = {};
-    swprintf(stats, 128, L"★ %zu 个应用 · %zu 个进程 · 双击组行展开", groupCount,
+    swprintf(stats, 128, L"%zu 个应用 · %zu 个进程 · 双击组行展开", groupCount,
              g_app.scanner.processes().size());
     SelectObject(mem, smallFont);
+    DrawUtils::drawStar(mem, kMargin + 8, rc.bottom - 11, 3, theme::LAVENDER);
     SetTextColor(mem, theme::TEXT_DIM);
-    TextOutW(mem, kMargin + 4, rc.bottom - 16, stats,
+    TextOutW(mem, kMargin + 16, rc.bottom - 18, stats,
              static_cast<int>(wcslen(stats)));
 
     buffer.commit(hdc, rc.right, rc.bottom);
@@ -399,6 +510,8 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
     if (dis->CtlType == ODT_BUTTON) {
         const bool isKill = dis->CtlID == IDC_BTN_KILL;
         const bool pressed = dis->itemState & ODS_SELECTED;
+        const bool hover = isKill ? hoverZone_ == Zone::Kill
+                                  : hoverZone_ == Zone::Hide;
 
         const int selCount = listBox_
                                  ? SendMessageW(listBox_, LB_GETSELCOUNT, 0, 0)
@@ -406,15 +519,17 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         if (isKill) {
             // 结束按钮：樱粉渐变（有选中时点亮），渐变用圆角区域裁剪避免方角溢出
             if (selCount > 0) {
+                const COLORREF l = pressed  ? RGB(255, 120, 168)
+                                   : hover  ? RGB(255, 150, 190)
+                                            : theme::ACCENT;
+                const COLORREF r = pressed  ? RGB(214, 84, 130)
+                                   : hover  ? RGB(236, 110, 158)
+                                            : theme::ACCENT_DEEP;
                 HRGN rgn = CreateRoundRectRgn(dis->rcItem.left, dis->rcItem.top,
                                               dis->rcItem.right + 1,
                                               dis->rcItem.bottom + 1, 16, 16);
                 SelectClipRgn(dis->hDC, rgn);
-                DrawUtils::fillGradientH(dis->hDC, dis->rcItem,
-                                         pressed ? RGB(255, 120, 168)
-                                                 : theme::ACCENT,
-                                         pressed ? RGB(214, 84, 130)
-                                                 : theme::ACCENT_DEEP);
+                DrawUtils::fillGradientH(dis->hDC, dis->rcItem, l, r);
                 SelectClipRgn(dis->hDC, nullptr);
                 DeleteObject(rgn);
             } else {
@@ -422,7 +537,8 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
             }
         } else {
             DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8,
-                                     pressed ? theme::BG_HOVER : theme::BG_CARD);
+                                     (pressed || hover) ? theme::BG_HOVER
+                                                        : theme::BG_CARD);
         }
         DrawUtils::outlineRoundRect(dis->hDC, dis->rcItem, 8, theme::BORDER);
 
@@ -430,8 +546,9 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         wchar_t text[64] = {};
         GetWindowTextW(dis->hwndItem, text, 64);
         std::wstring label = text;
-        if (isKill && selCount > 0)
-            label = L"♥ 结束所选 (" + std::to_wstring(selCount) + L")";
+        if (isKill && selCount > 0) {
+            label = L"结束所选 (" + std::to_wstring(selCount) + L")";
+        }
         static HFONT btnFont = DrawUtils::font(13, true);
         SelectObject(dis->hDC, btnFont);
         SetTextColor(dis->hDC,
@@ -440,9 +557,18 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         SIZE sz{};
         GetTextExtentPoint32W(dis->hDC, label.c_str(),
                               static_cast<int>(label.size()), &sz);
-        const int cx = (dis->rcItem.left + dis->rcItem.right - sz.cx) / 2;
+        int cx = (dis->rcItem.left + dis->rcItem.right - sz.cx) / 2;
         const int cy = (dis->rcItem.top + dis->rcItem.bottom - sz.cy) / 2;
-        TextOutW(dis->hDC, cx, cy, label.c_str(), static_cast<int>(label.size()));
+        if (isKill && selCount > 0) {
+            // 矢量爱心徽标 + 文字
+            DrawUtils::drawHeart(dis->hDC, cx - 8, cy + sz.cy / 2, 6,
+                                 theme::TEXT_MAIN);
+            TextOutW(dis->hDC, cx, cy, label.c_str(),
+                     static_cast<int>(label.size()));
+        } else {
+            TextOutW(dis->hDC, cx, cy, label.c_str(),
+                     static_cast<int>(label.size()));
+        }
         return;
     }
 
@@ -453,12 +579,29 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
     const PanelRow& row = rows_[dis->itemID];
 
     const bool selected = SendMessageW(listBox_, LB_GETSEL, dis->itemID, 0) > 0;
-    DrawUtils::fillRect(dis->hDC, dis->rcItem, theme::BG);
-    if (selected)
-        DrawUtils::fillRect(dis->hDC, dis->rcItem, theme::LIST_SEL);
-
     const bool canKill = rowCanTerminate(row, pidIndex_);
     const int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
+
+    // 行底色：受保护行微暗一档；选中 = 内嵌圆角块 + 左侧樱粉指示条
+    DrawUtils::fillRect(dis->hDC, dis->rcItem,
+                        canKill ? theme::BG : theme::ROW_PROTECT);
+    if (selected) {
+        DrawUtils::fillRoundRect(dis->hDC,
+                                 RECT{dis->rcItem.left + 2, dis->rcItem.top + 1,
+                                      dis->rcItem.right - 2,
+                                      dis->rcItem.bottom},
+                                 6, theme::LIST_SEL);
+        DrawUtils::fillRoundRect(dis->hDC,
+                                 RECT{dis->rcItem.left + 2, dis->rcItem.top + 3,
+                                      dis->rcItem.left + 5,
+                                      dis->rcItem.bottom - 4},
+                                 1, canKill ? theme::ACCENT : theme::PROTECTED);
+    }
+    // 行分隔线
+    DrawUtils::fillRect(dis->hDC,
+                        RECT{dis->rcItem.left + 8, dis->rcItem.bottom - 1,
+                             dis->rcItem.right - 8, dis->rcItem.bottom},
+                        theme::ROW_SEP);
 
     SetBkMode(dis->hDC, TRANSPARENT);
     static HFONT nameFont = DrawUtils::font(13, true);
@@ -473,7 +616,7 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
     swprintf(cpuText, 24, L"%.1f%%", rowCpu(row, pidIndex_));
 
     if (row.isGroup) {
-        // ---- 组行：选中圆点 + 展开箭头 + 应用名 ×N + 合计数值 ----
+        // ---- 组行：选中圆点 + 矢量展开箭头 + 应用名 ×N + 合计数值 ----
         // 选中指示：樱粉圆点（与展开箭头分离，避免与复选框式样争位）
         if (selected) {
             HBRUSH db = CreateSolidBrush(canKill ? theme::ACCENT : theme::PROTECTED);
@@ -481,7 +624,7 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
                                                      : theme::PROTECTED);
             HBRUSH ob = static_cast<HBRUSH>(SelectObject(dis->hDC, db));
             HPEN op = static_cast<HPEN>(SelectObject(dis->hDC, dp));
-            Ellipse(dis->hDC, dis->rcItem.left + 5, cy - 5, dis->rcItem.left + 15,
+            Ellipse(dis->hDC, dis->rcItem.left + 8, cy - 5, dis->rcItem.left + 18,
                     cy + 5);
             SelectObject(dis->hDC, ob);
             SelectObject(dis->hDC, op);
@@ -489,10 +632,9 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
             DeleteObject(dp);
         }
 
-        const wchar_t* arrow = row.expanded ? L"▼" : L"▶";
-        SelectObject(dis->hDC, tagFont);
-        SetTextColor(dis->hDC, theme::TEXT_DIM);
-        TextOutW(dis->hDC, dis->rcItem.left + 20, cy - 7, arrow, 1);
+        // 矢量展开箭头（比字体字形锐利，无字体回退风险）
+        DrawUtils::drawTriangle(dis->hDC, dis->rcItem.left + 28, cy, 4,
+                                row.expanded, theme::TEXT_DIM);
 
         wchar_t nameText[256] = {};
         if (row.pids.size() > 1)
@@ -500,20 +642,29 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         else
             swprintf(nameText, 256, L"%ls", row.name.c_str());
 
-        RECT nameRc{dis->rcItem.left + 34, cy - 10, dis->rcItem.right - 150,
+        RECT nameRc{dis->rcItem.left + 38, cy - 10, dis->rcItem.right - 150,
                     cy + 10};
         SelectObject(dis->hDC, nameFont);
         SetTextColor(dis->hDC, canKill ? theme::TEXT_MAIN : theme::PROTECTED);
         DrawTextW(dis->hDC, nameText, static_cast<int>(wcslen(nameText)), &nameRc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+        // 标签 pill 化（预混底色徽章，右缘贴数值区）
         const std::wstring tag = rowTag(row, pidIndex_);
         if (!tag.empty()) {
             SelectObject(dis->hDC, tagFont);
-            SetTextColor(dis->hDC, theme::PROTECTED);
-            RECT tagRc{nameRc.right - 64, cy - 9, nameRc.right + 10, cy + 9};
-            DrawTextW(dis->hDC, tag.c_str(), static_cast<int>(tag.size()), &tagRc,
-                      DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            SIZE tsz{};
+            GetTextExtentPoint32W(dis->hDC, tag.c_str(),
+                                  static_cast<int>(tag.size()), &tsz);
+            const bool isAuto = tag == L"自动清理";
+            RECT pill{nameRc.right - tsz.cx - 18, cy - 8, nameRc.right - 8,
+                      cy + 8};
+            DrawUtils::fillRoundRect(dis->hDC, pill, 8,
+                                     isAuto ? theme::TAG_BG_AUTO
+                                            : theme::TAG_BG_SYS);
+            SetTextColor(dis->hDC, isAuto ? theme::TAG_FG_AUTO : theme::TAG_FG_SYS);
+            DrawTextW(dis->hDC, tag.c_str(), static_cast<int>(tag.size()), &pill,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
     } else {
         // ---- 子行：缩进 + pid + 数值 ----
@@ -555,6 +706,36 @@ void ProcessPanel::syncConfigFromProtection()
     g_app.config.whitelist = g_app.protection.whitelistVector();
     g_app.config.autoCleanList = g_app.protection.autoCleanVector();
     g_app.config.save(g_app.iniPath);
+}
+
+ProcessPanel::Zone ProcessPanel::zoneAt(int x, int y) const
+{
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    if (y < 32) {
+        if (x > rc.right - 36 && x <= rc.right - 8)
+            return Zone::Close;
+        if (x > rc.right - 64 && x <= rc.right - 36)
+            return Zone::Rescan;
+        return Zone::None;
+    }
+    if (y > rc.bottom - kFooterH + 4 && y < rc.bottom - kFooterH + 46) {
+        if (x >= kMargin && x <= kMargin + 150)
+            return Zone::Kill;
+        if (x >= rc.right - kMargin - 80 && x <= rc.right - kMargin)
+            return Zone::Hide;
+    }
+    return Zone::None;
+}
+
+void ProcessPanel::setHoverZone(Zone z)
+{
+    if (hoverZone_ == z)
+        return;
+    hoverZone_ = z;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    SetCursor(LoadCursorW(nullptr,
+                          z == Zone::None ? IDC_ARROW : IDC_HAND));
 }
 
 void ProcessPanel::killSelected()
@@ -815,6 +996,43 @@ LRESULT CALLBACK ProcessPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
         if (self)
             self->refreshData();
         return 0;
+    case WM_APP_HOVER: // 按钮 hover（按钮子类转发）
+        if (self)
+            self->setHoverZone(wParam == IDC_BTN_KILL    ? Zone::Kill
+                               : wParam == IDC_BTN_HIDE ? Zone::Hide
+                                                        : Zone::None);
+        return 0;
+    case WM_MOUSEMOVE:
+        if (self) {
+            self->setHoverZone(
+                self->zoneAt(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tme);
+        }
+        return 0;
+    case WM_MOUSELEAVE:
+        if (self)
+            self->setHoverZone(Zone::None);
+        return 0;
+    case WM_TIMER:
+        // 滑入动画：ease-out 位移，150ms 后落位并杀定时器
+        if (self && wParam == kAnimTimer && self->animActive_) {
+            const DWORD t = GetTickCount() - self->animStart_;
+            if (t >= 150) {
+                KillTimer(hwnd, kAnimTimer);
+                self->animActive_ = false;
+                SetWindowPos(hwnd, nullptr, self->animTo_.x, self->animTo_.y, 0, 0,
+                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            } else {
+                const double k = 1.0 - static_cast<double>(t) / 150.0;
+                const int off = static_cast<int>(16 * k * k);
+                SetWindowPos(hwnd, nullptr,
+                             self->animTo_.x + self->animDir_ * off,
+                             self->animTo_.y, 0, 0,
+                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
+        return 0;
     case WM_CONTEXTMENU:
         if (self && reinterpret_cast<HWND>(wParam) == self->listBox_)
             self->onListContextMenu(lParam);
@@ -842,8 +1060,13 @@ LRESULT CALLBACK ProcessPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
     case WM_ERASEBKGND:
         return 1;
     case WM_DESTROY:
-        if (self)
+        if (self) {
+            if (self->animActive_) {
+                KillTimer(hwnd, kAnimTimer);
+                self->animActive_ = false;
+            }
             self->buffer_.release();
+        }
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);

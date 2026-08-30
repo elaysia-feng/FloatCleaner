@@ -22,6 +22,14 @@ void fillGradientH(HDC hdc, const RECT& rc, COLORREF left, COLORREF right);
 void textWithShadow(HDC hdc, int x, int y, const std::wstring& text,
                     COLORREF main, COLORREF shadow);
 
+// ===== 矢量装饰图形（替代 Unicode 符号，避免字体回退缺字）=====
+void drawStar(HDC hdc, int x, int y, int r, COLORREF color);    // 四角闪星
+void drawHeart(HDC hdc, int x, int y, int r, COLORREF color);   // 实心爱心
+void drawTriangle(HDC hdc, int x, int y, int r, bool down, COLORREF color);
+void drawRefresh(HDC hdc, int x, int y, int r, COLORREF color); // ↻ 弧+箭头
+void drawX(HDC hdc, int x, int y, int r, COLORREF color);       // 关闭叉
+void drawPetal(HDC hdc, int x, int y, int size, COLORREF color);// 樱花瓣
+
 HFONT font(int size, bool bold = false);
 
 // 双缓冲画布：构造时创建内存 DC，析构时提交并清理
