@@ -16,3 +16,4 @@ whitelist.ini
 .vscode/
 .idea/
 *.user
+*.zip
