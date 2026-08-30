@@ -17,3 +17,4 @@ whitelist.ini
 .idea/
 *.user
 *.zip
+SHA256SUMS.txt
