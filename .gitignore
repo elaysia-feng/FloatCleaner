@@ -1,0 +1,18 @@
+# Build output
+build/
+out/
+*.exe
+*.obj
+*.o
+*.res
+
+# Runtime artifacts
+logs/
+FloatCleaner.ini
+whitelist.ini
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
