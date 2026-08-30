@@ -68,6 +68,9 @@ bool Config::load(const std::wstring& iniPath)
     dockEdge = GetPrivateProfileIntW(L"general", L"dockEdge", 2, iniPath.c_str());
     if (dockEdge < 0 || dockEdge > 4)
         dockEdge = 2;
+    themeIndex = GetPrivateProfileIntW(L"general", L"theme", 0, iniPath.c_str());
+    if (themeIndex < 0 || themeIndex > 3)
+        themeIndex = 0;
 
     autoCleanEnabled =
         getString(iniPath, L"autoclean", L"enabled", L"1") != L"0";
@@ -94,6 +97,9 @@ void Config::save(const std::wstring& iniPath) const
                                iniPath.c_str());
     WritePrivateProfileStringW(L"general", L"dockEdge",
                                std::to_wstring(dockEdge).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"general", L"theme",
+                               std::to_wstring(themeIndex).c_str(),
+                               iniPath.c_str());
 
     WritePrivateProfileStringW(L"autoclean", L"enabled",
                                autoCleanEnabled ? L"1" : L"0", iniPath.c_str());

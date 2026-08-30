@@ -230,7 +230,7 @@ void FloatingBall::onPaint()
     HDC mem = buffer.begin(hdc, rc.right, rc.bottom);
 
     const MemoryStatus ms = SystemMonitor::query();
-    const COLORREF status = theme::usageColor(ms.percent);
+    const COLORREF status = fc::theme::usageColor(ms.percent);
     wchar_t pct[16] = {};
     swprintf(pct, 16, L"%u%%", ms.percent);
     const uint64_t usedBytes = ms.totalBytes > ms.availBytes
@@ -245,10 +245,10 @@ void FloatingBall::onPaint()
 
     if (!isDocked()) {
         // ---- 夜樱宝石球：分层渐变 + 暗衬环 + 两段高光 + 底部反光弧 ----
-        DrawUtils::fillGradient(mem, rc, theme::BALL_TOP, theme::BALL_BOTTOM);
+        DrawUtils::fillGradient(mem, rc, theme::pal().BALL_TOP, theme::pal().BALL_BOTTOM);
 
         // 状态环：暗衬环(1px) + 内缩 3px 的状态环；呼吸/悬停时加粗
-        HPEN rimPen = CreatePen(PS_SOLID, 1, theme::BALL_RIM_DARK);
+        HPEN rimPen = CreatePen(PS_SOLID, 1, theme::pal().BALL_RIM_DARK);
         HBRUSH hollow = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
         HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(mem, hollow));
         HPEN oldPen = static_cast<HPEN>(SelectObject(mem, rimPen));
@@ -268,15 +268,15 @@ void FloatingBall::onPaint()
         DeleteObject(ring);
 
         // 左上两段式高光（玻璃反射）
-        HBRUSH gloss = CreateSolidBrush(theme::BALL_GLOSS);
+        HBRUSH gloss = CreateSolidBrush(theme::pal().BALL_GLOSS);
         HPEN glossPen = CreatePen(PS_SOLID, 1, RGB(255, 214, 232));
         oldBrush = static_cast<HBRUSH>(SelectObject(mem, gloss));
         oldPen = static_cast<HPEN>(SelectObject(mem, glossPen));
         Ellipse(mem, rc.left + 9, rc.top + 7, rc.left + 25, rc.top + 16);
         DeleteObject(gloss);
         DeleteObject(glossPen);
-        HBRUSH glossCore = CreateSolidBrush(theme::BALL_GLOSS_CORE);
-        HPEN corePen = CreatePen(PS_SOLID, 1, theme::BALL_GLOSS_CORE);
+        HBRUSH glossCore = CreateSolidBrush(theme::pal().BALL_GLOSS_CORE);
+        HPEN corePen = CreatePen(PS_SOLID, 1, theme::pal().BALL_GLOSS_CORE);
         oldBrush = static_cast<HBRUSH>(SelectObject(mem, glossCore));
         oldPen = static_cast<HPEN>(SelectObject(mem, corePen));
         Ellipse(mem, rc.left + 13, rc.top + 9, rc.left + 21, rc.top + 13);
@@ -286,7 +286,7 @@ void FloatingBall::onPaint()
         DeleteObject(corePen);
 
         // 底部反光弧（环境光）
-        HPEN arcPen = CreatePen(PS_SOLID, 2, theme::BALL_ARC);
+        HPEN arcPen = CreatePen(PS_SOLID, 2, theme::pal().BALL_ARC);
         oldPen = static_cast<HPEN>(SelectObject(mem, arcPen));
         oldBrush = static_cast<HBRUSH>(SelectObject(mem, hollow));
         Arc(mem, rc.left + 12, rc.top + 30, rc.right - 8, rc.bottom + 22,
@@ -297,7 +297,7 @@ void FloatingBall::onPaint()
 
         // 右上沿一片暗粉花瓣（与高光错开）
         DrawUtils::drawPetal(mem, rc.right - 14, rc.top + 12, 4,
-                             theme::PETAL_BALL);
+                             theme::pal().PETAL_BALL);
 
         static HFONT pctFont = DrawUtils::font(16, true);
         static HFONT subFont = DrawUtils::font(10, false);
@@ -306,7 +306,7 @@ void FloatingBall::onPaint()
         SIZE sz{};
         GetTextExtentPoint32W(mem, pct, static_cast<int>(wcslen(pct)), &sz);
         DrawUtils::textWithShadow(mem, (rc.right - sz.cx) / 2, 11, pct,
-                                  theme::TEXT_MAIN, theme::BALL_TEXT_SHADOW);
+                                  theme::pal().TEXT_MAIN, theme::pal().BALL_TEXT_SHADOW);
 
         // 第二行：已用/总内存（GB）
         SelectObject(mem, subFont);
@@ -318,28 +318,28 @@ void FloatingBall::onPaint()
     } else {
         // ---- 贴边条：沿厚度方向的圆柱渐变 + 高光线 + 衬环状态点 ----
         if (dock_ == Dock::Left || dock_ == Dock::Right)
-            DrawUtils::fillGradientH(mem, rc, theme::DOCK_INNER, theme::DOCK_OUTER);
+            DrawUtils::fillGradientH(mem, rc, theme::pal().DOCK_INNER, theme::pal().DOCK_OUTER);
         else
-            DrawUtils::fillGradient(mem, rc, theme::DOCK_INNER, theme::DOCK_OUTER);
+            DrawUtils::fillGradient(mem, rc, theme::pal().DOCK_INNER, theme::pal().DOCK_OUTER);
         DrawUtils::outlineRoundRect(mem, rc, defaults::kDockThickness / 2,
-                                    theme::BORDER);
+                                    theme::pal().BORDER);
 
         // 内高光线（离屏幕最远的 1/4 厚度处）
         if (dock_ == Dock::Left || dock_ == Dock::Right) {
             const int hx = dock_ == Dock::Left ? rc.right - 6 : 5;
             DrawUtils::fillRect(mem, RECT{hx, 10, hx + 1, rc.bottom - 10},
-                                theme::DOCK_HIGHLIGHT);
+                                theme::pal().DOCK_HIGHLIGHT);
         } else {
             const int hy = dock_ == Dock::Top ? rc.bottom - 6 : 5;
             DrawUtils::fillRect(mem, RECT{10, hy, rc.right - 10, hy + 1},
-                                theme::DOCK_HIGHLIGHT);
+                                theme::pal().DOCK_HIGHLIGHT);
         }
 
         if (dock_ == Dock::Left || dock_ == Dock::Right) {
             // 状态点：暗衬环 + 状态色
             const int cx = rc.right / 2;
-            HBRUSH back = CreateSolidBrush(theme::DOT_BACKING);
-            HPEN backPen = CreatePen(PS_SOLID, 1, theme::DOT_BACKING);
+            HBRUSH back = CreateSolidBrush(theme::pal().DOT_BACKING);
+            HPEN backPen = CreatePen(PS_SOLID, 1, theme::pal().DOT_BACKING);
             HBRUSH ob = static_cast<HBRUSH>(SelectObject(mem, back));
             HPEN op = static_cast<HPEN>(SelectObject(mem, backPen));
             Ellipse(mem, cx - 4, 6, cx + 4, 16);
@@ -362,7 +362,7 @@ void FloatingBall::onPaint()
             swprintf(vertical, 48, L"%ls%.1fG", pct,
                      static_cast<double>(usedBytes) / (1ull << 30));
             SelectObject(mem, verticalFont());
-            SetTextColor(mem, theme::ACCENT);
+            SetTextColor(mem, theme::pal().ACCENT);
             SetTextAlign(mem, TA_CENTER | TA_TOP);
             const int len = static_cast<int>(wcslen(vertical));
             const int avail = rc.bottom - 24;
@@ -377,8 +377,8 @@ void FloatingBall::onPaint()
             SetTextAlign(mem, TA_LEFT | TA_TOP);
         } else {
             const int cy = rc.bottom / 2;
-            HBRUSH back = CreateSolidBrush(theme::DOT_BACKING);
-            HPEN backPen = CreatePen(PS_SOLID, 1, theme::DOT_BACKING);
+            HBRUSH back = CreateSolidBrush(theme::pal().DOT_BACKING);
+            HPEN backPen = CreatePen(PS_SOLID, 1, theme::pal().DOT_BACKING);
             HBRUSH ob = static_cast<HBRUSH>(SelectObject(mem, back));
             HPEN op = static_cast<HPEN>(SelectObject(mem, backPen));
             Ellipse(mem, 6, cy - 4, 16, cy + 4);
@@ -398,7 +398,7 @@ void FloatingBall::onPaint()
 
             static HFONT small = DrawUtils::font(11, true);
             SelectObject(mem, small);
-            SetTextColor(mem, theme::ACCENT);
+            SetTextColor(mem, theme::pal().ACCENT);
             wchar_t horizontal[48] = {};
             swprintf(horizontal, 48, L"%ls %.1fG", pct,
                      static_cast<double>(usedBytes) / (1ull << 30));

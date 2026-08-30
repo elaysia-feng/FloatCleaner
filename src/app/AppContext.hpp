@@ -37,6 +37,8 @@ constexpr UINT WM_APP_REFRESH = WM_APP + 2; // 数据刷新通知
 constexpr int IDM_TOGGLE_PANEL = 3001;
 constexpr int IDM_TOGGLE_AUTOCLEAN = 3002;
 constexpr int IDM_EXIT = 3003;
+constexpr int IDM_THEME_BASE = 3100; // 主题子菜单：3100..3100+kThemeCount-1
+constexpr int IDM_AUTORUN = 3104;    // 开机自启开关
 
 // 弹出主菜单（悬浮球右键与托盘共用），main.cpp 中实现
 void popupMainMenu(HWND anchor);

@@ -10,6 +10,7 @@
 #include <commctrl.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -39,6 +40,115 @@ LRESULT CALLBACK listSubclassProc(HWND h, UINT msg, WPARAM w, LPARAM l,
     if (msg == WM_MOUSEWHEEL || msg == WM_KEYDOWN || msg == WM_VSCROLL)
         InvalidateRect(reinterpret_cast<HWND>(ref), nullptr, FALSE);
     return r;
+}
+
+// ===== 看板娘「夜桜ユイ」Q 版头像 =====
+// 纯 GDI 保底方案（design/mascot-design.md 第四节），96 逻辑坐标经视口缩放绘制。
+// 发色/瞳色/呆毛取自当前主题，切换主题时头像同步变色。
+void drawChibi(HDC hdc, int x, int y, int size)
+{
+    const COLORREF hair = theme::pal().ACCENT;
+    const COLORREF hairTip = theme::pal().LAVENDER;
+    const COLORREF eye = theme::pal().SKY;
+    const COLORREF eyeDeep = RGB(58, 120, 200);
+    const COLORREF outline = RGB(70, 56, 110);
+    const COLORREF skin = RGB(255, 236, 226);
+    const COLORREF blush = RGB(255, 170, 196);
+    const COLORREF white = RGB(255, 255, 255);
+
+    const int saved = SaveDC(hdc);
+    SetMapMode(hdc, MM_ANISOTROPIC);
+    SetWindowExtEx(hdc, 96, 96, nullptr);
+    SetViewportExtEx(hdc, size, size, nullptr);
+    SetViewportOrgEx(hdc, x, y, nullptr);
+
+    // 实心椭圆辅助（画笔同色，避免默认黑描边）
+    auto fillE = [&](int l, int t, int r, int b, COLORREF c) {
+        HBRUSH brush = CreateSolidBrush(c);
+        HPEN pen = CreatePen(PS_SOLID, 1, c);
+        HBRUSH ob = static_cast<HBRUSH>(SelectObject(hdc, brush));
+        HPEN op = static_cast<HPEN>(SelectObject(hdc, pen));
+        Ellipse(hdc, l, t, r, b);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(brush);
+        DeleteObject(pen);
+    };
+
+    // 1. 后发主体 + 渐变发梢
+    fillE(10, 12, 86, 92, hair);
+    fillE(16, 66, 80, 94, hairTip);
+    // 2. 两侧垂发 + 发梢
+    fillE(10, 30, 30, 88, hair);
+    fillE(10, 64, 30, 92, hairTip);
+    fillE(66, 30, 86, 88, hair);
+    fillE(66, 64, 86, 92, hairTip);
+    // 3. 脸
+    {
+        HBRUSH brush = CreateSolidBrush(skin);
+        HPEN pen = CreatePen(PS_SOLID, 2, outline);
+        HBRUSH ob = static_cast<HBRUSH>(SelectObject(hdc, brush));
+        HPEN op = static_cast<HPEN>(SelectObject(hdc, pen));
+        Ellipse(hdc, 20, 26, 76, 82);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(brush);
+        DeleteObject(pen);
+    }
+    // 4. 天蓝大眼（上深下浅 + 星形高光）
+    fillE(30, 48, 40, 62, eye);
+    fillE(30, 48, 40, 55, eyeDeep);
+    fillE(56, 48, 66, 62, eye);
+    fillE(56, 48, 66, 55, eyeDeep);
+    DrawUtils::drawStar(hdc, 34, 53, 3, white);
+    fillE(61, 57, 64, 60, white);
+    // 6. 腮红
+    fillE(24, 60, 34, 66, blush);
+    fillE(62, 60, 72, 66, blush);
+    // 7. 刘海：波浪圆齿 + 弧形发际线（关键辨识层）
+    {
+        POINT pts[16] = {{20, 44},  {24, 52},  {30, 46},  {36, 52},
+                         {42, 46},  {48, 52},  {54, 46},  {60, 52},
+                         {66, 46},  {72, 52},  {76, 44},  {76, 32},
+                         {62, 20},  {48, 16},  {34, 20},  {20, 32}};
+        HBRUSH brush = CreateSolidBrush(hair);
+        HPEN pen = CreatePen(PS_SOLID, 2, outline);
+        HBRUSH ob = static_cast<HBRUSH>(SelectObject(hdc, brush));
+        HPEN op = static_cast<HPEN>(SelectObject(hdc, pen));
+        Polygon(hdc, pts, 16);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(brush);
+        DeleteObject(pen);
+        // 中间一缕挑染
+        fillE(46, 20, 50, 44, hairTip);
+    }
+    // 8. 呆毛（翘起的"占用率曲线"）
+    {
+        POINT pts[4] = {{44, 20}, {52, 20}, {58, 4}, {49, 11}};
+        HBRUSH brush = CreateSolidBrush(hair);
+        HPEN pen = CreatePen(PS_SOLID, 2, outline);
+        HBRUSH ob = static_cast<HBRUSH>(SelectObject(hdc, brush));
+        HPEN op = static_cast<HPEN>(SelectObject(hdc, pen));
+        Polygon(hdc, pts, 4);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(brush);
+        DeleteObject(pen);
+    }
+    // 9. 樱花发饰（左侧鬓发）
+    for (int i = 0; i < 5; ++i) {
+        const double a = i * 6.283185307 / 5.0;
+        const int cx = 22 + static_cast<int>(5 * cos(a));
+        const int cyy = 40 + static_cast<int>(5 * sin(a));
+        fillE(cx - 3, cyy - 3, cx + 3, cyy + 3, RGB(255, 190, 214));
+    }
+    fillE(20, 38, 24, 42, RGB(255, 214, 120));
+    // 10. 悬浮球彩蛋（右下角小玻璃球）
+    fillE(74, 74, 88, 88, eye);
+    fillE(78, 78, 83, 83, white);
+
+    RestoreDC(hdc, saved);
 }
 
 // owner-draw 按钮子类化：转发 hover 状态给面板
@@ -393,33 +503,34 @@ void ProcessPanel::onPaint()
     HDC mem = buffer.begin(hdc, rc.right, rc.bottom);
 
     // 夜空渐变底（窗口圆角区域负责裁剪）
-    DrawUtils::fillGradient(mem, rc, theme::BG_TOP, theme::BG_BOTTOM);
+    DrawUtils::fillGradient(mem, rc, theme::pal().BG_TOP, theme::pal().BG_BOTTOM);
 
     // 标题栏：稍亮的夜空渐变带
     RECT header{0, 0, rc.right, kHeaderH};
-    DrawUtils::fillGradient(mem, header, theme::HEADER_TOP, theme::HEADER_BOTTOM);
+    DrawUtils::fillGradient(mem, header, theme::pal().HEADER_TOP, theme::pal().HEADER_BOTTOM);
 
     // 标题栏右上静态花瓣点缀（预混暗色，若隐若现）
-    DrawUtils::drawPetal(mem, rc.right - 66, 12, 5, theme::PETAL_HEADER);
-    DrawUtils::drawPetal(mem, rc.right - 82, 24, 4, theme::PETAL_HEADER2);
+    DrawUtils::drawPetal(mem, rc.right - 66, 12, 5, theme::pal().PETAL_HEADER);
+    DrawUtils::drawPetal(mem, rc.right - 82, 24, 4, theme::pal().PETAL_HEADER2);
 
     SetBkMode(mem, TRANSPARENT);
     static HFONT titleFont = DrawUtils::font(15, true);
     static HFONT smallFont = DrawUtils::font(11, false);
 
-    // 标题：矢量星 + 文字（柔影）
+    // 标题：矢量星 + 文字（柔影）+ 看板娘ユイ探头
     SelectObject(mem, titleFont);
-    DrawUtils::drawStar(mem, kMargin + 12, 22, 6, theme::LAVENDER);
+    DrawUtils::drawStar(mem, kMargin + 12, 22, 6, theme::pal().LAVENDER);
     DrawUtils::textWithShadow(mem, kMargin + 24, 12, L"进程管理",
-                              theme::TEXT_MAIN, RGB(40, 24, 64));
+                              theme::pal().TEXT_MAIN, theme::pal().TEXT_SHADOW);
+    drawChibi(mem, rc.right - 152, 0, 44);
 
     // 自动清理状态（矢量爱心）
     SelectObject(mem, smallFont);
     DrawUtils::drawHeart(mem, rc.right - 202, 19, 5,
-                         g_app.autoCleaner.enabled() ? theme::ACCENT
-                                                     : theme::TEXT_DIM);
-    SetTextColor(mem, g_app.autoCleaner.enabled() ? theme::ACCENT
-                                                  : theme::TEXT_DIM);
+                         g_app.autoCleaner.enabled() ? theme::pal().ACCENT
+                                                     : theme::pal().TEXT_DIM);
+    SetTextColor(mem, g_app.autoCleaner.enabled() ? theme::pal().ACCENT
+                                                  : theme::pal().TEXT_DIM);
     TextOutW(mem, rc.right - 192, 14, L"自动清理中", 5);
 
     // "↻" 重新扫描 + "✕" 关闭（矢量绘制，hover 高亮）
@@ -427,19 +538,19 @@ void ProcessPanel::onPaint()
     const bool closeHover = hoverZone_ == Zone::Close;
     if (rescanHover)
         DrawUtils::fillRoundRect(mem, RECT{rc.right - 58, 8, rc.right - 36, 30}, 4,
-                                 theme::BG_HOVER);
+                                 theme::pal().BG_HOVER);
     if (closeHover)
         DrawUtils::fillRoundRect(mem, RECT{rc.right - 32, 8, rc.right - 10, 30}, 4,
-                                 theme::BG_HOVER);
+                                 theme::pal().BG_HOVER);
     DrawUtils::drawRefresh(mem, rc.right - 47, 19, 7,
-                           rescanHover ? theme::TEXT_MAIN : theme::LAVENDER);
+                           rescanHover ? theme::pal().TEXT_MAIN : theme::pal().LAVENDER);
     DrawUtils::drawX(mem, rc.right - 21, 19, 5,
-                     closeHover ? theme::TEXT_MAIN : theme::TEXT_DIM);
+                     closeHover ? theme::pal().TEXT_MAIN : theme::pal().TEXT_DIM);
 
     // 列表卡片：圆角底色吸收 listbox 方角
     RECT card{kMargin, kHeaderH - 6, rc.right - kMargin,
               rc.bottom - kFooterH + 2};
-    DrawUtils::fillRoundRect(mem, card, 10, theme::BG);
+    DrawUtils::fillRoundRect(mem, card, 10, theme::pal().BG);
     DrawUtils::outlineRoundRect(mem, card, 10, RGB(84, 70, 128));
 
     // 自绘滚动条（行高超出可视区才画）
@@ -470,10 +581,10 @@ void ProcessPanel::onPaint()
             DrawUtils::fillRoundRect(
                 mem, RECT{lbRc.right + 2, trackTop, lbRc.right + 6,
                           lbRc.bottom - 2},
-                2, theme::SCROLL_TRACK);
+                2, theme::pal().SCROLL_TRACK);
             DrawUtils::fillRoundRect(
                 mem, RECT{lbRc.right + 1, thumbY, lbRc.right + 7, thumbY + thumbH},
-                3, theme::SCROLL_THUMB);
+                3, theme::pal().SCROLL_THUMB);
         }
     }
 
@@ -486,8 +597,8 @@ void ProcessPanel::onPaint()
     swprintf(stats, 128, L"%zu 个应用 · %zu 个进程 · 双击组行展开", groupCount,
              g_app.scanner.processes().size());
     SelectObject(mem, smallFont);
-    DrawUtils::drawStar(mem, kMargin + 8, rc.bottom - 11, 3, theme::LAVENDER);
-    SetTextColor(mem, theme::TEXT_DIM);
+    DrawUtils::drawStar(mem, kMargin + 8, rc.bottom - 11, 3, theme::pal().LAVENDER);
+    SetTextColor(mem, theme::pal().TEXT_DIM);
     TextOutW(mem, kMargin + 16, rc.bottom - 18, stats,
              static_cast<int>(wcslen(stats)));
 
@@ -521,10 +632,10 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
             if (selCount > 0) {
                 const COLORREF l = pressed  ? RGB(255, 120, 168)
                                    : hover  ? RGB(255, 150, 190)
-                                            : theme::ACCENT;
+                                            : theme::pal().ACCENT;
                 const COLORREF r = pressed  ? RGB(214, 84, 130)
                                    : hover  ? RGB(236, 110, 158)
-                                            : theme::ACCENT_DEEP;
+                                            : theme::pal().ACCENT_DEEP;
                 HRGN rgn = CreateRoundRectRgn(dis->rcItem.left, dis->rcItem.top,
                                               dis->rcItem.right + 1,
                                               dis->rcItem.bottom + 1, 16, 16);
@@ -533,14 +644,14 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
                 SelectClipRgn(dis->hDC, nullptr);
                 DeleteObject(rgn);
             } else {
-                DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8, theme::BG_CARD);
+                DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8, theme::pal().BG_CARD);
             }
         } else {
             DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8,
-                                     (pressed || hover) ? theme::BG_HOVER
-                                                        : theme::BG_CARD);
+                                     (pressed || hover) ? theme::pal().BG_HOVER
+                                                        : theme::pal().BG_CARD);
         }
-        DrawUtils::outlineRoundRect(dis->hDC, dis->rcItem, 8, theme::BORDER);
+        DrawUtils::outlineRoundRect(dis->hDC, dis->rcItem, 8, theme::pal().BORDER);
 
         SetBkMode(dis->hDC, TRANSPARENT);
         wchar_t text[64] = {};
@@ -552,8 +663,8 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         static HFONT btnFont = DrawUtils::font(13, true);
         SelectObject(dis->hDC, btnFont);
         SetTextColor(dis->hDC,
-                     isKill ? (selCount > 0 ? theme::TEXT_MAIN : theme::TEXT_DIM)
-                            : theme::TEXT_MAIN);
+                     isKill ? (selCount > 0 ? theme::pal().TEXT_MAIN : theme::pal().TEXT_DIM)
+                            : theme::pal().TEXT_MAIN);
         SIZE sz{};
         GetTextExtentPoint32W(dis->hDC, label.c_str(),
                               static_cast<int>(label.size()), &sz);
@@ -562,7 +673,7 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         if (isKill && selCount > 0) {
             // 矢量爱心徽标 + 文字
             DrawUtils::drawHeart(dis->hDC, cx - 8, cy + sz.cy / 2, 6,
-                                 theme::TEXT_MAIN);
+                                 theme::pal().TEXT_MAIN);
             TextOutW(dis->hDC, cx, cy, label.c_str(),
                      static_cast<int>(label.size()));
         } else {
@@ -584,24 +695,24 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
 
     // 行底色：受保护行微暗一档；选中 = 内嵌圆角块 + 左侧樱粉指示条
     DrawUtils::fillRect(dis->hDC, dis->rcItem,
-                        canKill ? theme::BG : theme::ROW_PROTECT);
+                        canKill ? theme::pal().BG : theme::pal().ROW_PROTECT);
     if (selected) {
         DrawUtils::fillRoundRect(dis->hDC,
                                  RECT{dis->rcItem.left + 2, dis->rcItem.top + 1,
                                       dis->rcItem.right - 2,
                                       dis->rcItem.bottom},
-                                 6, theme::LIST_SEL);
+                                 6, theme::pal().LIST_SEL);
         DrawUtils::fillRoundRect(dis->hDC,
                                  RECT{dis->rcItem.left + 2, dis->rcItem.top + 3,
                                       dis->rcItem.left + 5,
                                       dis->rcItem.bottom - 4},
-                                 1, canKill ? theme::ACCENT : theme::PROTECTED);
+                                 1, canKill ? theme::pal().ACCENT : theme::pal().PROTECTED);
     }
     // 行分隔线
     DrawUtils::fillRect(dis->hDC,
                         RECT{dis->rcItem.left + 8, dis->rcItem.bottom - 1,
                              dis->rcItem.right - 8, dis->rcItem.bottom},
-                        theme::ROW_SEP);
+                        theme::pal().ROW_SEP);
 
     SetBkMode(dis->hDC, TRANSPARENT);
     static HFONT nameFont = DrawUtils::font(13, true);
@@ -619,9 +730,9 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         // ---- 组行：选中圆点 + 矢量展开箭头 + 应用名 ×N + 合计数值 ----
         // 选中指示：樱粉圆点（与展开箭头分离，避免与复选框式样争位）
         if (selected) {
-            HBRUSH db = CreateSolidBrush(canKill ? theme::ACCENT : theme::PROTECTED);
-            HPEN dp = CreatePen(PS_SOLID, 1, canKill ? theme::ACCENT_DEEP
-                                                     : theme::PROTECTED);
+            HBRUSH db = CreateSolidBrush(canKill ? theme::pal().ACCENT : theme::pal().PROTECTED);
+            HPEN dp = CreatePen(PS_SOLID, 1, canKill ? theme::pal().ACCENT_DEEP
+                                                     : theme::pal().PROTECTED);
             HBRUSH ob = static_cast<HBRUSH>(SelectObject(dis->hDC, db));
             HPEN op = static_cast<HPEN>(SelectObject(dis->hDC, dp));
             Ellipse(dis->hDC, dis->rcItem.left + 8, cy - 5, dis->rcItem.left + 18,
@@ -634,7 +745,7 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
 
         // 矢量展开箭头（比字体字形锐利，无字体回退风险）
         DrawUtils::drawTriangle(dis->hDC, dis->rcItem.left + 28, cy, 4,
-                                row.expanded, theme::TEXT_DIM);
+                                row.expanded, theme::pal().TEXT_DIM);
 
         wchar_t nameText[256] = {};
         if (row.pids.size() > 1)
@@ -645,7 +756,7 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         RECT nameRc{dis->rcItem.left + 38, cy - 10, dis->rcItem.right - 150,
                     cy + 10};
         SelectObject(dis->hDC, nameFont);
-        SetTextColor(dis->hDC, canKill ? theme::TEXT_MAIN : theme::PROTECTED);
+        SetTextColor(dis->hDC, canKill ? theme::pal().TEXT_MAIN : theme::pal().PROTECTED);
         DrawTextW(dis->hDC, nameText, static_cast<int>(wcslen(nameText)), &nameRc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
@@ -660,21 +771,21 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
             RECT pill{nameRc.right - tsz.cx - 18, cy - 8, nameRc.right - 8,
                       cy + 8};
             DrawUtils::fillRoundRect(dis->hDC, pill, 8,
-                                     isAuto ? theme::TAG_BG_AUTO
-                                            : theme::TAG_BG_SYS);
-            SetTextColor(dis->hDC, isAuto ? theme::TAG_FG_AUTO : theme::TAG_FG_SYS);
+                                     isAuto ? theme::pal().TAG_BG_AUTO
+                                            : theme::pal().TAG_BG_SYS);
+            SetTextColor(dis->hDC, isAuto ? theme::pal().TAG_FG_AUTO : theme::pal().TAG_FG_SYS);
             DrawTextW(dis->hDC, tag.c_str(), static_cast<int>(tag.size()), &pill,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
     } else {
         // ---- 子行：缩进 + pid + 数值 ----
         RECT box{dis->rcItem.left + 26, cy - 6, dis->rcItem.left + 38, cy + 6};
-        DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::BORDER);
+        DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::pal().BORDER);
         if (selected)
             DrawUtils::fillRoundRect(dis->hDC,
                                      RECT{box.left + 3, box.top + 3, box.right - 3,
                                           box.bottom - 3},
-                                     2, canKill ? theme::ACCENT : theme::PROTECTED);
+                                     2, canKill ? theme::pal().ACCENT : theme::pal().PROTECTED);
 
         wchar_t nameText[64] = {};
         if (row.pids.size() == 1)
@@ -682,20 +793,20 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         RECT nameRc{dis->rcItem.left + 46, cy - 9, dis->rcItem.right - 150,
                     cy + 9};
         SelectObject(dis->hDC, childFont);
-        SetTextColor(dis->hDC, canKill ? theme::TEXT_DIM : theme::PROTECTED);
+        SetTextColor(dis->hDC, canKill ? theme::pal().TEXT_DIM : theme::pal().PROTECTED);
         DrawTextW(dis->hDC, nameText, static_cast<int>(wcslen(nameText)), &nameRc,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     // 内存与 CPU（组/子行通用布局）
     SelectObject(dis->hDC, numFont);
-    SetTextColor(dis->hDC, canKill ? theme::TEXT_MAIN : theme::PROTECTED);
+    SetTextColor(dis->hDC, canKill ? theme::pal().TEXT_MAIN : theme::pal().PROTECTED);
     RECT memRc{dis->rcItem.right - 150, cy - 9, dis->rcItem.right - 84, cy + 9};
     DrawTextW(dis->hDC, memText, static_cast<int>(wcslen(memText)), &memRc,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
     const double cpu = rowCpu(row, pidIndex_);
-    SetTextColor(dis->hDC, cpu > 15.0 ? theme::WARN : theme::TEXT_DIM);
+    SetTextColor(dis->hDC, cpu > 15.0 ? theme::pal().WARN : theme::pal().TEXT_DIM);
     RECT cpuRc{dis->rcItem.right - 76, cy - 9, dis->rcItem.right - 10, cy + 9};
     DrawTextW(dis->hDC, cpuText, static_cast<int>(wcslen(cpuText)), &cpuRc,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
@@ -1051,10 +1162,18 @@ LRESULT CALLBACK ProcessPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam,
         return 0;
     }
     case WM_CTLCOLORLISTBOX: {
+        // 画刷跟随主题（切换主题后重建）
+        static HBRUSH bgBrush = nullptr;
+        static int brushTheme = -1;
+        if (brushTheme != theme::currentThemeIndex()) {
+            if (bgBrush)
+                DeleteObject(bgBrush);
+            bgBrush = CreateSolidBrush(theme::pal().BG);
+            brushTheme = theme::currentThemeIndex();
+        }
         HDC hdc = reinterpret_cast<HDC>(wParam);
-        SetBkColor(hdc, theme::BG);
-        SetTextColor(hdc, theme::TEXT_MAIN);
-        static HBRUSH bgBrush = CreateSolidBrush(theme::BG);
+        SetBkColor(hdc, theme::pal().BG);
+        SetTextColor(hdc, theme::pal().TEXT_MAIN);
         return reinterpret_cast<LRESULT>(bgBrush);
     }
     case WM_ERASEBKGND:

@@ -17,7 +17,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-g++ -std=c++17 -O2 -municode -mwindows -Wall -Wextra -Isrc src\main.cpp src\config\Config.cpp src\core\ProcessScanner.cpp src\core\ProtectionList.cpp src\core\ProcessKiller.cpp src\core\SystemMonitor.cpp src\auto\AutoCleaner.cpp src\ui\DrawUtils.cpp src\ui\TrayIcon.cpp src\ui\FloatingBall.cpp src\ui\ProcessPanel.cpp build\app.res -o FloatCleaner.exe -lpsapi -lcomctl32 -lshell32 -lgdi32 -luser32 -ladvapi32 -s
+g++ -std=c++17 -O2 -municode -mwindows -Wall -Wextra -Isrc src\main.cpp src\config\Config.cpp src\core\ProcessScanner.cpp src\core\ProtectionList.cpp src\core\ProcessKiller.cpp src\core\SystemMonitor.cpp src\auto\AutoCleaner.cpp src\ui\Theme.cpp src\ui\DrawUtils.cpp src\ui\TrayIcon.cpp src\ui\FloatingBall.cpp src\ui\ProcessPanel.cpp build\app.res -o FloatCleaner.exe -lpsapi -lcomctl32 -lshell32 -lgdi32 -luser32 -ladvapi32 -s
 
 if errorlevel 1 (
     echo [!] build failed.

@@ -9,7 +9,8 @@ struct Config {
     // [general]
     int ballX = -1;
     int ballY = -1;
-    int dockEdge = 2; // 0=自由 1=左 2=右 3=上 4=下
+    int dockEdge = 2;    // 0=自由 1=左 2=右 3=上 4=下
+    int themeIndex = 0;  // 主题：0=夜樱 1=月夜 2=初樱 3=花火
 
     // [autoclean]
     bool autoCleanEnabled = true;

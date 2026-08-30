@@ -22,6 +22,7 @@ add_executable(FloatCleaner WIN32
     src/auto/AutoCleaner.hpp
     src/auto/AutoCleaner.cpp
     src/ui/Theme.hpp
+    src/ui/Theme.cpp
     src/ui/DrawUtils.hpp
     src/ui/DrawUtils.cpp
     src/ui/TrayIcon.hpp

@@ -15,6 +15,48 @@ namespace fc {
 
 AppContext g_app;
 
+// ===== 开机自启（HKCU Run 键，仅当前用户）=====
+constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kRunValue[] = L"FloatCleaner";
+
+bool isAutostartEnabled()
+{
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &k) !=
+        ERROR_SUCCESS)
+        return false;
+    const LSTATUS r =
+        RegQueryValueExW(k, kRunValue, nullptr, nullptr, nullptr, nullptr);
+    RegCloseKey(k);
+    return r == ERROR_SUCCESS;
+}
+
+void setAutostart(bool on)
+{
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE,
+                        nullptr, &k, nullptr) != ERROR_SUCCESS)
+        return;
+    if (on) {
+        wchar_t path[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        RegSetValueExW(k, kRunValue, 0, REG_SZ,
+                       reinterpret_cast<const BYTE *>(path),
+                       static_cast<DWORD>((lstrlenW(path) + 1) * sizeof(wchar_t)));
+    } else {
+        RegDeleteValueW(k, kRunValue);
+    }
+    RegCloseKey(k);
+}
+
+void applyThemeEverywhere()
+{
+    if (g_app.ball)
+        InvalidateRect(g_app.ball->hwnd(), nullptr, FALSE);
+    if (g_app.panel)
+        InvalidateRect(g_app.panel->hwnd(), nullptr, FALSE);
+}
+
 void popupMainMenu(HWND anchor)
 {
     HMENU menu = CreatePopupMenu();
@@ -22,6 +64,19 @@ void popupMainMenu(HWND anchor)
     AppendMenuW(menu, MF_STRING, IDM_TOGGLE_PANEL,
                 panelVisible ? L"收起进程面板" : L"打开进程面板");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    // 主题子菜单
+    HMENU themeMenu = CreatePopupMenu();
+    int themeCount = 0;
+    const auto *themes = theme::allThemes(&themeCount);
+    for (int i = 0; i < themeCount; ++i)
+        AppendMenuW(themeMenu,
+                    MF_STRING | (i == theme::currentThemeIndex() ? MF_CHECKED : 0),
+                    IDM_THEME_BASE + i, themes[i].name);
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu), L"主题");
+    AppendMenuW(menu, MF_STRING | (isAutostartEnabled() ? MF_CHECKED : 0),
+                IDM_AUTORUN, L"开机自启");
+
     AppendMenuW(menu, MF_STRING | (g_app.autoCleaner.enabled() ? MF_CHECKED : 0),
                 IDM_TOGGLE_AUTOCLEAN, L"智能自动清理");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -53,10 +108,19 @@ void popupMainMenu(HWND anchor)
         if (g_app.ball)
             InvalidateRect(g_app.ball->hwnd(), nullptr, FALSE);
         break;
+    case IDM_AUTORUN:
+        setAutostart(!isAutostartEnabled());
+        break;
     case IDM_EXIT:
         DestroyWindow(anchor);
         break;
     default:
+        if (cmd >= IDM_THEME_BASE && cmd < IDM_THEME_BASE + theme::kThemeCount) {
+            theme::setThemeByIndex(cmd - IDM_THEME_BASE);
+            g_app.config.themeIndex = theme::currentThemeIndex();
+            g_app.config.save(g_app.iniPath);
+            applyThemeEverywhere();
+        }
         break;
     }
 }
@@ -72,8 +136,8 @@ HICON createAppIcon(int size)
     RECT rc{0, 0, size, size};
     DrawUtils::fillRect(mem, rc, RGB(0, 0, 0));
 
-    HBRUSH bg = CreateSolidBrush(theme::ACCENT);
-    HPEN pen = CreatePen(PS_SOLID, 1, theme::ACCENT);
+    HBRUSH bg = CreateSolidBrush(theme::pal().ACCENT);
+    HPEN pen = CreatePen(PS_SOLID, 1, theme::pal().ACCENT);
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(mem, bg));
     HPEN oldPen = static_cast<HPEN>(SelectObject(mem, pen));
     Ellipse(mem, 1, 1, size - 1, size - 1);
@@ -151,6 +215,7 @@ int run(HINSTANCE hInstance)
 
     g_app.iniPath = exeRelativePath(kIniFile);
     g_app.config.load(g_app.iniPath);
+    theme::setThemeByIndex(g_app.config.themeIndex);
     g_app.protection.init(g_app.config.whitelist, g_app.config.autoCleanList);
     g_app.autoCleaner.setup(&g_app.config, &g_app.protection,
                             [](const std::wstring& title, const std::wstring& text) {
