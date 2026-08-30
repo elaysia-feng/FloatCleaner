@@ -404,15 +404,22 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
                                  ? SendMessageW(listBox_, LB_GETSELCOUNT, 0, 0)
                                  : 0;
         if (isKill) {
-            // 结束按钮：樱粉渐变（有选中时点亮）
-            if (selCount > 0)
+            // 结束按钮：樱粉渐变（有选中时点亮），渐变用圆角区域裁剪避免方角溢出
+            if (selCount > 0) {
+                HRGN rgn = CreateRoundRectRgn(dis->rcItem.left, dis->rcItem.top,
+                                              dis->rcItem.right + 1,
+                                              dis->rcItem.bottom + 1, 16, 16);
+                SelectClipRgn(dis->hDC, rgn);
                 DrawUtils::fillGradientH(dis->hDC, dis->rcItem,
                                          pressed ? RGB(255, 120, 168)
                                                  : theme::ACCENT,
                                          pressed ? RGB(214, 84, 130)
                                                  : theme::ACCENT_DEEP);
-            else
+                SelectClipRgn(dis->hDC, nullptr);
+                DeleteObject(rgn);
+            } else {
                 DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8, theme::BG_CARD);
+            }
         } else {
             DrawUtils::fillRoundRect(dis->hDC, dis->rcItem, 8,
                                      pressed ? theme::BG_HOVER : theme::BG_CARD);
@@ -466,11 +473,26 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
     swprintf(cpuText, 24, L"%.1f%%", rowCpu(row, pidIndex_));
 
     if (row.isGroup) {
-        // ---- 组行：展开箭头 + 应用名 ×N + 合计数值 ----
+        // ---- 组行：选中圆点 + 展开箭头 + 应用名 ×N + 合计数值 ----
+        // 选中指示：樱粉圆点（与展开箭头分离，避免与复选框式样争位）
+        if (selected) {
+            HBRUSH db = CreateSolidBrush(canKill ? theme::ACCENT : theme::PROTECTED);
+            HPEN dp = CreatePen(PS_SOLID, 1, canKill ? theme::ACCENT_DEEP
+                                                     : theme::PROTECTED);
+            HBRUSH ob = static_cast<HBRUSH>(SelectObject(dis->hDC, db));
+            HPEN op = static_cast<HPEN>(SelectObject(dis->hDC, dp));
+            Ellipse(dis->hDC, dis->rcItem.left + 5, cy - 5, dis->rcItem.left + 15,
+                    cy + 5);
+            SelectObject(dis->hDC, ob);
+            SelectObject(dis->hDC, op);
+            DeleteObject(db);
+            DeleteObject(dp);
+        }
+
         const wchar_t* arrow = row.expanded ? L"▼" : L"▶";
         SelectObject(dis->hDC, tagFont);
         SetTextColor(dis->hDC, theme::TEXT_DIM);
-        TextOutW(dis->hDC, dis->rcItem.left + 8, cy - 7, arrow, 1);
+        TextOutW(dis->hDC, dis->rcItem.left + 20, cy - 7, arrow, 1);
 
         wchar_t nameText[256] = {};
         if (row.pids.size() > 1)
@@ -478,7 +500,7 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
         else
             swprintf(nameText, 256, L"%ls", row.name.c_str());
 
-        RECT nameRc{dis->rcItem.left + 26, cy - 10, dis->rcItem.right - 150,
+        RECT nameRc{dis->rcItem.left + 34, cy - 10, dis->rcItem.right - 150,
                     cy + 10};
         SelectObject(dis->hDC, nameFont);
         SetTextColor(dis->hDC, canKill ? theme::TEXT_MAIN : theme::PROTECTED);
@@ -493,23 +515,14 @@ void ProcessPanel::onDrawItem(const DRAWITEMSTRUCT* dis)
             DrawTextW(dis->hDC, tag.c_str(), static_cast<int>(tag.size()), &tagRc,
                       DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         }
-
-        // 复选框
-        RECT box{dis->rcItem.left + 6, cy - 7, dis->rcItem.left + 20, cy + 7};
-        DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::BORDER);
-        if (selected)
-            DrawUtils::fillRoundRect(dis->hDC,
-                                     RECT{box.left + 3, box.top + 3, box.right - 2,
-                                          box.bottom - 2},
-                                     2, canKill ? theme::ACCENT : theme::PROTECTED);
     } else {
         // ---- 子行：缩进 + pid + 数值 ----
         RECT box{dis->rcItem.left + 26, cy - 6, dis->rcItem.left + 38, cy + 6};
         DrawUtils::outlineRoundRect(dis->hDC, box, 3, theme::BORDER);
         if (selected)
             DrawUtils::fillRoundRect(dis->hDC,
-                                     RECT{box.left + 3, box.top + 3, box.right - 2,
-                                          box.bottom - 2},
+                                     RECT{box.left + 3, box.top + 3, box.right - 3,
+                                          box.bottom - 3},
                                      2, canKill ? theme::ACCENT : theme::PROTECTED);
 
         wchar_t nameText[64] = {};
